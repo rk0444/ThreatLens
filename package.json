@@ -1,0 +1,20 @@
+{
+  "name": "threatlens-v2",
+  "version": "2.0.0",
+  "main": "main.js",
+  "description": "Unified Cybersecurity Platform",
+  "author": "ThreatLens Team",
+  "scripts": {
+    "dev": "concurrently \"npm run frontend:dev\" \"npm run backend:dev\" \"wait-on http://localhost:5173 && electron .\"",
+    "frontend:dev": "cd frontend && npm run dev",
+    "backend:dev": "python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload",
+    "build": "cd frontend && npm run build && electron-builder",
+    "postinstall": "cd frontend && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3",
+    "wait-on": "^7.2.0"
+  }
+}
