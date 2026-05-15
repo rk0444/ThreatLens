@@ -4,6 +4,9 @@ from datetime import datetime
 from typing import List, Optional
 from .db import Base
 
+# For Python 3.14 compatibility, use newer declarative syntax
+Base.registry.map_imperatively = True
+
 
 class CVE(Base):
     __tablename__ = "cves"
@@ -18,9 +21,15 @@ class CVE(Base):
     raw_json: Mapped[Optional[dict]] = mapped_column(JSON)
     asset_affected: Mapped[bool] = mapped_column(default=False)
     actively_exploited: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    cisa_kev: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)
+    ransomware_use: Mapped[Optional[bool]] = mapped_column(Boolean, default=False)
+    patch_available: Mapped[Optional[bool]] = mapped_column(Boolean, default=True)
+    affected_asset_count: Mapped[Optional[int]] = mapped_column(Integer, default=0)
+    risk_score: Mapped[Optional[float]] = mapped_column(Float, default=0.0)
+    risk_band: Mapped[Optional[str]] = mapped_column(String)
+    ai_summary: Mapped[Optional[str]] = mapped_column(Text)
+    mitre_tags: Mapped[Optional[str]] = mapped_column(Text)
 
 
 class Asset(Base):
@@ -165,3 +174,4 @@ class Blocklist(Base):
     ip_address: Mapped[str] = mapped_column(String, unique=True)
     reason: Mapped[Optional[str]] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+

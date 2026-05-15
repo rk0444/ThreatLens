@@ -1,7 +1,7 @@
 import requests
 import os
 from sqlalchemy.orm import Session
-from ..database import models, db
+from database import models, db
 from dotenv import load_dotenv
 
 load_dotenv()

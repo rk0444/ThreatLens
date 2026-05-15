@@ -1,16 +1,44 @@
 import { useState, useEffect } from 'react';
-import { X, ShieldAlert, Globe, ExternalLink } from 'lucide-react';
+import { X, ShieldAlert, Globe, ExternalLink, Brain, AlertTriangle, Copy, CheckCircle } from 'lucide-react';
 
-const getRiskColor = (score) => {
-  if (score >= 86) return 'var(--danger)';
-  if (score >= 61) return '#fc8181';
-  if (score >= 31) return 'var(--warning)';
-  return 'var(--success)';
+import { getRiskScore, getRiskColor } from '../utils/riskScore';
+
+const getMitreStageColor = (stage) => {
+  const colors = {
+    'Initial Access': '#dc2626',
+    'Execution': '#ea580c',
+    'Persistence': '#d97706',
+    'Privilege Escalation': '#ca8a04',
+    'Defense Evasion': '#65a30d',
+    'Credential Access': '#16a34a',
+    'Discovery': '#0891b2',
+    'Lateral Movement': '#2563eb',
+    'Collection': '#7c3aed',
+    'Exfiltration': '#c026d3',
+    'Command and Control': '#db2777',
+    'Impact': '#991b1b'
+  };
+  return colors[stage] || '#6b7280';
+};
+
+const copyToClipboard = async (text, commandId) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    setCopiedCommand(commandId);
+    setTimeout(() => setCopiedCommand(null), 2000);
+  } catch (err) {
+    console.error('Failed to copy:', err);
+  }
 };
 
 export default function CveDrawer({ cve, onClose, footer }) {
   const [actors, setActors] = useState([]);
   const [loadingActors, setLoadingActors] = useState(false);
+  const [aiSummary, setAiSummary] = useState(null);
+  const [loadingAiSummary, setLoadingAiSummary] = useState(false);
+  const [correlationData, setCorrelationData] = useState(null);
+  const [loadingCorrelation, setLoadingCorrelation] = useState(false);
+  const [copiedCommand, setCopiedCommand] = useState(null);
 
   useEffect(() => {
     if (cve) {
@@ -22,6 +50,26 @@ export default function CveDrawer({ cve, onClose, footer }) {
           setLoadingActors(false);
         })
         .catch(() => setLoadingActors(false));
+
+      // Fetch AI summary
+      setLoadingAiSummary(true);
+      fetch(`http://127.0.0.1:8000/api/cves/${cve.cve_id}/ai-summary`)
+        .then(r => r.json())
+        .then(data => {
+          setAiSummary(data);
+          setLoadingAiSummary(false);
+        })
+        .catch(() => setLoadingAiSummary(false));
+
+      // Fetch correlation data
+      setLoadingCorrelation(true);
+      fetch(`http://127.0.0.1:8000/api/cves/${cve.cve_id}/correlations`)
+        .then(r => r.json())
+        .then(data => {
+          setCorrelationData(data);
+          setLoadingCorrelation(false);
+        })
+        .catch(() => setLoadingCorrelation(false));
     }
   }, [cve]);
 
@@ -50,8 +98,8 @@ export default function CveDrawer({ cve, onClose, footer }) {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', marginBottom: '2rem' }}>
             <div style={{ position: 'relative' }}>
-              <div className="risk-circle-large" style={{ border: `4px solid ${getRiskColor(cve.cvss_score * 10)}` }}>
-                {Math.round(cve.cvss_score * 10)}
+              <div className="risk-circle-large" style={{ border: `4px solid ${getRiskColor(getRiskScore(cve))}` }}>
+  {getRiskScore(cve)}
               </div>
               {cve.actively_exploited && (
                 <div style={{ position: 'absolute', top: -5, right: -5, background: 'var(--danger)', borderRadius: '50%', width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 'bold' }}>!</div>
@@ -90,6 +138,161 @@ export default function CveDrawer({ cve, onClose, footer }) {
             <div className="label-small">Description</div>
             <p style={{ lineHeight: 1.6, marginTop: '0.5rem' }}>{cve.description}</p>
           </div>
+
+          {/* Correlation Alert */}
+          {correlationData && correlationData.correlation_statement && (
+            <div style={{ 
+              background: 'linear-gradient(135deg, rgba(251, 191, 36, 0.15), rgba(245, 158, 11, 0.15))', 
+              border: '1px solid #f59e0b', 
+              borderRadius: '6px', 
+              padding: '1rem', 
+              marginBottom: '2rem',
+              color: '#f59e0b'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+                <AlertTriangle size={20} />
+                <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>ACTIVE EXPLOITATION DETECTED</div>
+              </div>
+              <div style={{ fontSize: '0.85rem', lineHeight: 1.5 }}>
+                {correlationData.correlation_statement}
+              </div>
+              {correlationData.related_incidents && correlationData.related_incidents.length > 0 && (
+                <div style={{ marginTop: '0.75rem', fontSize: '0.8rem' }}>
+                  <strong>Related Incidents:</strong> {correlationData.related_incidents.map(id => `INC-${id}`).join(', ')}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* AI Summary Section */}
+          <div style={{ marginTop: '2rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+              <Brain size={18} color="var(--accent-gold)" />
+              <div className="label-small" style={{ margin: 0 }}>AI Analyst Summary</div>
+            </div>
+            
+            {loadingAiSummary ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <div className="skeleton" style={{ height: '20px', width: '60%' }}></div>
+                <div className="skeleton" style={{ height: '16px', width: '100%' }}></div>
+                <div className="skeleton" style={{ height: '16px', width: '90%' }}></div>
+                <div className="skeleton" style={{ height: '16px', width: '85%' }}></div>
+              </div>
+            ) : aiSummary ? (
+              <div style={{ 
+                background: 'rgba(255,255,255,0.02)', 
+                border: '1px solid var(--border)', 
+                borderRadius: '6px', 
+                padding: '1.25rem' 
+              }}>
+                <div style={{ display: 'grid', gap: '1rem', marginBottom: '1rem' }}>
+                  <div>
+                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem', fontSize: '0.9rem' }}>
+                      What is Affected
+                    </div>
+                    <div style={{ color: 'var(--text-secondary)', lineHeight: 1.5, fontSize: '0.85rem' }}>
+                      {aiSummary.what_is_affected}
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem', fontSize: '0.9rem' }}>
+                      How It Works
+                    </div>
+                    <div style={{ color: 'var(--text-secondary)', lineHeight: 1.5, fontSize: '0.85rem' }}>
+                      {aiSummary.how_it_works}
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem', fontSize: '0.9rem' }}>
+                      What to Do Right Now
+                    </div>
+                    <div style={{ color: 'var(--text-secondary)', lineHeight: 1.5, fontSize: '0.85rem' }}>
+                      {aiSummary.what_to_do_now}
+                    </div>
+                  </div>
+                </div>
+                
+                <div style={{ 
+                  display: 'flex', 
+                  justifyContent: 'space-between', 
+                  alignItems: 'center', 
+                  paddingTop: '0.75rem', 
+                  borderTop: '1px solid var(--border)',
+                  fontSize: '0.75rem',
+                  color: 'var(--text-muted)'
+                }}>
+                  <span>Confidence: {Math.round((aiSummary.confidence_score || 0.7) * 100)}%</span>
+                  <span>Generated: {new Date(aiSummary.generated_at).toLocaleString()}</span>
+                </div>
+              </div>
+            ) : (
+              <div style={{ 
+                background: 'rgba(255,255,255,0.02)', 
+                border: '1px solid var(--border)', 
+                borderRadius: '6px', 
+                padding: '1.25rem',
+                textAlign: 'center',
+                color: 'var(--text-muted)',
+                fontSize: '0.85rem'
+              }}>
+                AI analysis unavailable. Check back later.
+              </div>
+            )}
+          </div>
+
+          {/* MITRE ATT&CK Tags */}
+          {aiSummary && (aiSummary.mitre_stage || aiSummary.mitre_tags) && (
+            <div style={{ marginTop: '2rem' }}>
+              <div className="label-small" style={{ marginBottom: '1rem' }}>MITRE ATT&CK Classification</div>
+              
+              {aiSummary.mitre_stage && (
+                <div style={{ marginBottom: '1rem' }}>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>Stage</div>
+                  <div 
+                    style={{ 
+                      display: 'inline-block',
+                      background: getMitreStageColor(aiSummary.mitre_stage),
+                      color: 'white',
+                      padding: '0.5rem 1rem',
+                      borderRadius: '20px',
+                      fontSize: '0.85rem',
+                      fontWeight: 600,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px'
+                    }}
+                  >
+                    {aiSummary.mitre_stage}
+                  </div>
+                </div>
+              )}
+              
+              {aiSummary.mitre_tags && aiSummary.mitre_tags.length > 0 && (
+                <div>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>Techniques</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    {aiSummary.mitre_tags.map((tag, idx) => (
+                      <span 
+                        key={idx}
+                        style={{ 
+                          background: 'rgba(255,255,255,0.1)',
+                          border: '1px solid var(--border)',
+                          color: 'var(--text-secondary)',
+                          padding: '0.25rem 0.75rem',
+                          borderRadius: '12px',
+                          fontSize: '0.75rem',
+                          fontFamily: 'JetBrains Mono'
+                        }}
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="asset-section" style={{ marginTop: '2rem' }}>
             <div className="label-small">Attribution: Threat Actors</div>

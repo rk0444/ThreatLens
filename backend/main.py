@@ -5,6 +5,9 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
+from backend.services.cisa_kev import sync_cisa_kev
+from backend.services.mitre_attack import sync_mitre_data
+from backend.database.db import SessionLocal
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -17,14 +20,34 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
-from .database import db, models, schemas
-from .services.nvd import fetch_latest_cves
-from .services.osint import fetch_osint_alerts
-from .services.abuseipdb import check_ip_reputation
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from backend.database import db, models, schemas
+from backend.services.nvd import fetch_latest_cves
+from backend.services.osint import fetch_osint_alerts
+from backend.services.abuseipdb import check_ip_reputation
+# from services.agents import get_pipeline
+# from services.morning_brief import get_morning_brief_service
+# from services.remediation import get_remediation_service
+# from services.vector_store import get_vector_store
+# from database.threat_schema import ThreatType
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 import threading
 import traceback
+
+
+def run_nvd_sync():
+    """Wrapper so APScheduler can call fetch_latest_cves with a managed DB session."""
+    session = SessionLocal()
+    try:
+        fetch_latest_cves(session)
+    except Exception as e:
+        print(f"[nvd_sync] failed: {e}")
+    finally:
+        session.close()
 
 
 # Real-time event manager
@@ -100,11 +123,16 @@ def seed_data(db_session: Session):
 
 # Scheduler reliability helpers
 def safe_run_job(job_func, job_name):
+    import inspect
     db_gen = db.get_db()
     db_session = next(db_gen)
     try:
         print(f"[SCHEDULER] Starting job: {job_name}")
-        job_func(db_session)
+        sig = inspect.signature(job_func)
+        if len(sig.parameters) == 0:
+            job_func()
+        else:
+            job_func(db_session)
         # Log success
         log = models.SchedulerLog(job_name=job_name, status="Success")
         db_session.add(log)
@@ -134,11 +162,11 @@ async def lifespan(app: FastAPI):
         # Part 4: Startup Sequence
         print("[STARTUP] 1/4 Database initialized.")
         
-        from .services.mitre_attack import sync_mitre_data
+        from backend.services.mitre_attack import sync_mitre_data
         sync_mitre_data(db_session)
         print("[STARTUP] 2/4 MITRE ATT&CK sync complete.")
         
-        from .services.cisa_kev import sync_cisa_kev
+        from backend.services.cisa_kev import sync_cisa_kev
         sync_cisa_kev(db_session)
         print("[STARTUP] 3/4 CISA KEV sync complete.")
         
@@ -153,31 +181,26 @@ async def lifespan(app: FastAPI):
     
     # Trigger jobs immediately, then on interval
     scheduler.add_job(
-        lambda: safe_run_job(fetch_latest_cves, "NVD Sync"), 
+        lambda: safe_run_job(run_nvd_sync, "NVD Sync"),
         'interval', minutes=15, next_run_time=datetime.now(),
         misfire_grace_time=300, id="nvd_sync"
     )
     scheduler.add_job(
-        lambda: safe_run_job(lambda db: fetch_osint_alerts(db, manager), "OSINT Sync"), 
+        lambda: safe_run_job(lambda db: fetch_osint_alerts(db, manager), "OSINT Sync"),
         'interval', minutes=30, next_run_time=datetime.now(),
         misfire_grace_time=300, id="osint_sync"
     )
-    
-    # New jobs
-    from .services.cisa_kev import sync_cisa_kev
     scheduler.add_job(
-        lambda: safe_run_job(sync_cisa_kev, "CISA KEV Sync"), 
+        lambda: safe_run_job(sync_cisa_kev, "CISA KEV Sync"),
         'interval', hours=6, misfire_grace_time=300, id="cisa_sync"
     )
-    
-    from .services.mitre_attack import sync_mitre_data
     scheduler.add_job(
-        lambda: safe_run_job(sync_mitre_data, "MITRE Sync"), 
+        lambda: safe_run_job(sync_mitre_data, "MITRE Sync"),
         'interval', days=7, misfire_grace_time=300, id="mitre_sync"
     )
-    
+
     scheduler.start()
-    
+
     yield
     scheduler.shutdown()
 
@@ -198,50 +221,100 @@ async def root():
     return {"status": "online", "version": "2.0.0"}
 
 
-@app.get("/api/overview", response_model=schemas.OverviewResponse)
+@app.get("/api/overview")
 async def get_overview(db: Session = Depends(db.get_db)):
-    today = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    total_cves = (
-        db.query(models.CVE).filter(models.CVE.created_at >= today).count()
-    )
-    active_incidents = (
-        db.query(models.Incident)
-        .filter(models.Incident.status == "Active")
-        .count()
-    )
-    critical_count = (
-        db.query(models.Incident)
-        .filter(models.Incident.severity == "Critical")
-        .count()
-    )
-    assets_monitored = db.query(models.Asset).count()
-
-    # Severity breakdown for today's CVEs
-    all_cves_today = db.query(models.CVE).filter(models.CVE.created_at >= today).all()
-    def score_tier(cve):
-        s = (cve.cvss_score or 0) * 10
-        if s >= 86: return "Critical"
-        if s >= 61: return "High"
-        if s >= 31: return "Medium"
-        if s >= 11: return "Low"
-        return "Info"
-    from collections import Counter
-    tiers = Counter(score_tier(c) for c in all_cves_today)
-    total = max(len(all_cves_today), 1)
-    severity_breakdown = [
-        {"tier": t, "count": tiers.get(t, 0), "pct": round(tiers.get(t, 0) / total * 100, 1)}
-        for t in ["Critical", "High", "Medium", "Low", "Info"]
-    ]
-
-    return {
-        "total_cves_today": total_cves,
-        "active_incidents": active_incidents,
-        "critical_count": critical_count,
-        "assets_monitored": assets_monitored,
-        "severity_breakdown": severity_breakdown,
-    }
+    """Get overview metrics for dashboard"""
+    try:
+        # Get metrics
+        today = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        total_cves = (
+            db.query(models.CVE).filter(models.CVE.created_at >= today).count()
+        )
+        active_incidents = (
+            db.query(models.Incident)
+            .filter(models.Incident.status == "Active")
+            .count()
+        )
+        critical_count = (
+            db.query(models.CVE).filter(models.CVE.cvss_score >= 9.0).count()
+        )
+        assets_monitored = db.query(models.Asset).count()
+        
+        # Get severity breakdown
+        all_cves_today = db.query(models.CVE).filter(models.CVE.created_at >= today).all()
+        def score_tier(cve):
+            s = (cve.cvss_score or 0) * 10
+            if s >= 86: return "Critical"
+            if s >= 61: return "High"
+            if s >= 31: return "Medium"
+            if s >= 11: return "Low"
+            return "Info"
+        from collections import Counter
+        tiers = Counter(score_tier(c) for c in all_cves_today)
+        severity_breakdown = [
+            {"name": t, "value": tiers.get(t, 0)}
+            for t in ["Critical", "High", "Medium", "Low"]
+        ]
+        
+        # Get top 5 critical threats
+        top_threats = db.query(models.CVE).filter(
+            models.CVE.cvss_score >= 7.0
+        ).order_by(models.CVE.cvss_score.desc()).limit(5).all()
+        
+        top_threats_data = []
+        for threat in top_threats:
+            top_threats_data.append({
+                'id': threat.id,
+                'cve_id': threat.cve_id,
+                'description': threat.description[:100] + '...' if len(threat.description) > 100 else threat.description,
+                'risk_score': (threat.cvss_score or 0) * 10
+            })
+        
+        # Get activity log (simplified)
+        activity_log = []
+        recent_cves = db.query(models.CVE).order_by(models.CVE.created_at.desc()).limit(5).all()
+        for cve in recent_cves:
+            activity_log.append({
+                'id': f"cve-{cve.id}",
+                'type': 'CVE',
+                'message': f"New CVE {cve.cve_id} detected",
+                'timestamp': cve.created_at.isoformat() if cve.created_at else datetime.now(timezone.utc).isoformat(),
+                'severity': 'Critical' if (cve.cvss_score or 0) >= 9.0 else 'High'
+            })
+        
+        recent_incidents = db.query(models.Incident).order_by(models.Incident.created_at.desc()).limit(5).all()
+        for incident in recent_incidents:
+            activity_log.append({
+                'id': f"incident-{incident.id}",
+                'type': 'Incident',
+                'message': f"Security incident on {incident.machine_id}",
+                'timestamp': incident.created_at.isoformat() if incident.created_at else datetime.now(timezone.utc).isoformat(),
+                'severity': incident.severity
+            })
+        
+        # Get morning brief
+        morning_brief = db.query(models.MorningBrief).order_by(models.MorningBrief.date.desc()).first()
+        
+        return {
+            'metrics': {
+                'totalCves': total_cves,
+                'activeIncidents': active_incidents,
+                'criticalThreats': critical_count,
+                'assetsMonitored': assets_monitored
+            },
+            'severityBreakdown': severity_breakdown,
+            'topThreats': top_threats_data,
+            'activityLog': activity_log,
+            'morningBrief': {
+                'content': morning_brief.content if morning_brief else None,
+                'date': morning_brief.date.isoformat() if morning_brief else None
+            }
+        }
+    except Exception as e:
+        logging.error(f"Error in overview endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/health")
@@ -392,47 +465,55 @@ async def get_cves(
 
 @app.get("/api/cves/graph")
 async def get_threat_graph(db: Session = Depends(db.get_db)):
-    # Returns data for force-graph, ordered by most critical vulnerabilities first
-    cves = db.query(models.CVE).order_by(models.CVE.cvss_score.desc()).limit(20).all()
+    # Top 20 CVEs by cvss_score (risk_score is null on most real data)
+    cves = (
+        db.query(models.CVE)
+        .order_by(models.CVE.cvss_score.desc().nullslast())
+        .limit(20)
+        .all()
+    )
+
     nodes = []
     links = []
-    
-    from .services.ai_enrichment import extract_actors_from_description
-    
-    # Pre-fetch all known actors to avoid slow queries
-    all_actors = db.query(models.ThreatActor).all()
-    
+    actor_nodes_added = set()
+
     for cve in cves:
-        nodes.append({"id": cve.cve_id, "type": "cve", "val": 10})
-        
-        # Find actors associated with this CVE
-        linked_actors = [a for a in all_actors if a.associated_cves and cve.cve_id in a.associated_cves]
-        
-        # If no actors linked, use AI to generate them on the fly and save them!
-        if not linked_actors:
-            actor_names = extract_actors_from_description(cve.description)
-            for name in set(actor_names):
-                if name == "Unknown Actor": continue
-                
-                # Check if actor already exists in DB
-                actor = next((a for a in all_actors if a.name == name), None)
-                if not actor:
-                    actor = models.ThreatActor(name=name, associated_cves=[cve.cve_id], campaigns=[])
-                    db.add(actor)
-                    all_actors.append(actor)
-                else:
-                    current_cves = actor.associated_cves or []
-                    if cve.cve_id not in current_cves:
-                        actor.associated_cves = current_cves + [cve.cve_id]
-                linked_actors.append(actor)
-            db.commit()
-            
-        # Add to graph
-        for actor in linked_actors:
-            if not any(n["id"] == actor.name for n in nodes):
-                nodes.append({"id": actor.name, "type": "actor", "val": 8})
-            links.append({"source": cve.cve_id, "target": actor.name})
-        
+        nodes.append({
+            "id": cve.cve_id,
+            "type": "cve",
+            "val": round(cve.cvss_score or 5, 1),
+            "cvss": cve.cvss_score,
+            "kev": cve.cisa_kev,
+        })
+
+        # Real MITRE mappings from cve_to_groups table
+        mappings = db.query(models.CveToGroup).filter(
+            models.CveToGroup.cve_id == cve.cve_id
+        ).all()
+
+        for m in mappings:
+            if m.group_name not in actor_nodes_added:
+                # Fetch group metadata for richer node
+                group = db.query(models.MitreGroup).filter(
+                    models.MitreGroup.mitre_id == m.group_mitre_id
+                ).first()
+                nodes.append({
+                    "id": m.group_name,
+                    "type": "actor",
+                    "val": 8,
+                    "mitre_id": m.group_mitre_id,
+                    "country": group.country if group else "Unknown",
+                    "motivation": group.motivation if group else "Unknown",
+                    "source": "MITRE CTI",
+                })
+                actor_nodes_added.add(m.group_name)
+
+            links.append({
+                "source": cve.cve_id,
+                "target": m.group_name,
+                "source_label": "MITRE CTI",
+            })
+
     return {"nodes": nodes, "links": links}
 
 @app.get("/api/cves/{cve_id}", response_model=schemas.CVEResponse)
@@ -786,12 +867,17 @@ async def get_ip_reputation_endpoint(ip: str, machine_id: Optional[int] = None, 
 
 @app.post("/api/ingest/nvd")
 async def ingest_nvd():
-    threading.Thread(target=lambda: safe_run_job(fetch_latest_cves, "Manual NVD Sync")).start()
+    threading.Thread(target=lambda: safe_run_job(run_nvd_sync, "Manual NVD Sync")).start()
     return {"status": "started"}
 
 @app.post("/api/ingest/otx")
 async def ingest_otx():
     threading.Thread(target=lambda: safe_run_job(lambda db: fetch_osint_alerts(db, manager), "Manual OSINT Sync")).start()
+    return {"status": "started"}
+
+@app.post("/api/ingest/mitre")
+async def ingest_mitre():
+    threading.Thread(target=lambda: safe_run_job(sync_mitre_data, "Manual MITRE Sync")).start()
     return {"status": "started"}
 
 @app.get("/api/scheduler/logs")
@@ -806,6 +892,229 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+
+# @app.get("/api/overview")
+# async def get_overview(db: Session = Depends(db.get_db)):
+#     """Get overview metrics for dashboard"""
+#     try:
+#         # Get metrics
+#         total_cves = db.query(models.CVE).filter(
+#             models.CVE.published_date >= datetime.now(timezone.utc) - timedelta(days=1)
+#         ).count()
+#         
+#         active_incidents = db.query(models.Incident).filter(
+#             models.Incident.status == 'Active'
+#         ).count()
+#         
+#         critical_count = db.query(models.CVE).filter(
+#             models.CVE.cvss_score >= 9.0
+#         ).count()
+#         
+#         assets_monitored = db.query(models.Asset).count()
+#         
+#         # Get severity breakdown
+#         severity_breakdown = []
+#         for severity in ['Critical', 'High', 'Medium', 'Low']:
+#             count = db.query(models.CVE).filter(
+#                 models.CVE.published_date >= datetime.now(timezone.utc) - timedelta(days=1)
+#             ).count()  # Simplified for now
+#             severity_breakdown.append({'name': severity, 'value': count})
+#         
+#         # Get top 5 critical threats
+#         top_threats = db.query(models.CVE).filter(
+#             models.CVE.cvss_score >= 7.0
+#         ).order_by(models.CVE.cvss_score.desc()).limit(5).all()
+#         
+#         top_threats_data = []
+#         for threat in top_threats:
+#             top_threats_data.append({
+#                 'id': threat.id,
+#                 'cve_id': threat.cve_id,
+#                 'description': threat.description[:100] + '...' if len(threat.description) > 100 else threat.description,
+#                 'risk_score': (threat.cvss_score or 0) * 10  # Simplified risk score
+#             })
+#         
+#         # Get activity log (simplified)
+#         activity_log = []
+#         recent_cves = db.query(models.CVE).order_by(models.CVE.created_at.desc()).limit(5).all()
+#         for cve in recent_cves:
+#             activity_log.append({
+#                 'id': f"cve-{cve.id}",
+#                 'type': 'CVE',
+#                 'message': f"New CVE {cve.cve_id} detected",
+#                 'timestamp': cve.created_at.isoformat() if cve.created_at else datetime.now(timezone.utc).isoformat(),
+#                 'severity': 'Critical' if (cve.cvss_score or 0) >= 9.0 else 'High'
+#             })
+#         
+#         recent_incidents = db.query(models.Incident).order_by(models.Incident.created_at.desc()).limit(5).all()
+#         for incident in recent_incidents:
+#             activity_log.append({
+#                 'id': f"incident-{incident.id}",
+#                 'type': 'Incident',
+#                 'message': f"Security incident on {incident.machine_hostname or 'Unknown'}",
+#                 'timestamp': incident.created_at.isoformat() if incident.created_at else datetime.now(timezone.utc).isoformat(),
+#                 'severity': incident.severity
+#             })
+#         
+#         # Get morning brief
+#         morning_brief = db.query(models.MorningBrief).order_by(models.MorningBrief.date.desc()).first()
+#         
+#         return {
+#             'metrics': {
+#                 'totalCves': total_cves,
+#                 'activeIncidents': active_incidents,
+#                 'criticalThreats': critical_count,
+#                 'assetsMonitored': assets_monitored
+#             },
+#             'severityBreakdown': severity_breakdown,
+#             'topThreats': top_threats_data,
+#             'activityLog': activity_log,
+#             'morningBrief': {
+#                 'content': morning_brief.content if morning_brief else None,
+#                 'date': morning_brief.date.isoformat() if morning_brief else None
+#             }
+#         }
+#     except Exception as e:
+#         logging.error(f"Error in overview endpoint: {str(e)}")
+#         raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/cves/{cve_id}/ai-summary")
+async def get_cve_ai_summary(cve_id: str, db: Session = Depends(db.get_db)):
+    """Get AI-generated summary for a CVE"""
+    try:
+        cve = db.query(models.CVE).filter(models.CVE.cve_id == cve_id).first()
+        if not cve:
+            raise HTTPException(status_code=404, detail="CVE not found")
+        
+        # For now, return basic structured data
+        # In production, this would come from AI pipeline
+        return {
+            'what_is_affected': 'Systems with vulnerable software installations',
+            'how_it_works': 'Remote code execution through vulnerable library function',
+            'what_to_do_now': 'Apply security patches immediately and monitor for exploitation attempts',
+            'confidence_score': 0.85,
+            'generated_at': datetime.now(timezone.utc).isoformat()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting AI summary for {cve_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/cves/{cve_id}/correlations")
+async def get_cve_correlations(cve_id: str, db: Session = Depends(db.get_db)):
+    """Get correlation data for a CVE"""
+    try:
+        cve = db.query(models.CVE).filter(models.CVE.cve_id == cve_id).first()
+        if not cve:
+            raise HTTPException(status_code=404, detail="CVE not found")
+        
+        # Check for related incidents (simplified correlation logic)
+        related_incidents = db.query(models.Incident).filter(
+            models.Incident.created_at >= datetime.now(timezone.utc) - timedelta(days=7)
+        ).all()
+        
+        correlation_statement = None
+        if related_incidents and cve.cvss_score >= 8.0:
+            correlation_statement = f"Potential exploitation of {cve_id} detected on enterprise endpoints"
+        
+        return {
+            'correlation_statement': correlation_statement,
+            'related_incidents': [inc.id for inc in related_incidents],
+            'correlation_score': 0.8 if correlation_statement else 0.0
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting correlations for {cve_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/incidents/{incident_id}/correlations")
+async def get_incident_correlations(incident_id: int, db: Session = Depends(db.get_db)):
+    """Get correlation data for an incident"""
+    try:
+        incident = db.query(models.Incident).filter(models.Incident.id == incident_id).first()
+        if not incident:
+            raise HTTPException(status_code=404, detail="Incident not found")
+        
+        # Look for related CVEs (simplified correlation logic)
+        related_cves = db.query(models.CVE).filter(
+            models.CVE.actively_exploited == True
+        ).limit(5).all()
+        
+        correlation_statement = None
+        if related_cves and incident.severity in ['Critical', 'High']:
+            correlation_statement = f"Incident behavior matches exploitation patterns of {related_cves[0].cve_id if related_cves else 'known vulnerabilities'}"
+        
+        return {
+            'correlation_statement': correlation_statement,
+            'related_cves': [cve.cve_id for cve in related_cves],
+            'correlation_score': 0.7 if correlation_statement else 0.0
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting correlations for incident {incident_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/incidents/{incident_id}/playbook")
+async def get_incident_playbook(incident_id: int, db: Session = Depends(db.get_db)):
+    """Get AI-generated remediation playbook for an incident"""
+    try:
+        incident = db.query(models.Incident).filter(models.Incident.id == incident_id).first()
+        if not incident:
+            raise HTTPException(status_code=404, detail="Incident not found")
+        
+        # Generate playbook using AI service
+        # remediation_service = get_remediation_service()
+        # playbook = await remediation_service.generate_playbook(db, incident_id)
+        
+        # For now, return fallback playbook
+        return {
+            'incident_id': incident_id,
+            'steps': [
+                {
+                    'step': 1,
+                    'action': 'Isolate affected system from network',
+                    'command': 'netsh interface set interface "Ethernet" disable',
+                    'priority': 'immediate',
+                    'estimated_time': '2 minutes',
+                    'risk_level': 'low'
+                },
+                {
+                    'step': 2,
+                    'action': 'Terminate suspicious processes',
+                    'command': f'taskkill /f /im {incident.process_name or "suspicious.exe"}',
+                    'priority': 'immediate',
+                    'estimated_time': '5 minutes',
+                    'risk_level': 'medium'
+                }
+            ],
+            'total_steps': 2,
+            'confidence_score': 0.6
+        }
+        
+        # return {
+        #     'incident_id': playbook.incident_id,
+        #     'steps': [
+        #         {
+        #             'step': step.step,
+        #             'action': step.action,
+        #             'command': step.command,
+        #             'priority': step.priority,
+        #             'estimated_time': step.estimated_time,
+        #             'risk_level': step.risk_level
+        #         } for step in playbook.steps
+        #     ],
+        #     'total_steps': len(playbook.steps),
+        #     'confidence_score': playbook.confidence_score,
+        #     'generated_at': playbook.generated_at.isoformat() if playbook.generated_at else datetime.now(timezone.utc).isoformat()
+        # }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error generating playbook for incident {incident_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.get("/api/cves/{cve_id}/threat-actors")
 async def get_cve_threat_actors(cve_id: str, db: Session = Depends(db.get_db)):
@@ -879,3 +1188,8 @@ async def get_top_threat_actors(db: Session = Depends(db.get_db)):
                 "cve_count": res.cve_count
             })
     return top_groups
+
+
+
+
+

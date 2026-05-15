@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from ..database import models
+from backend.database import models
 import json
 
 def cross_reference_cve_with_assets(db_session: Session, cve: models.CVE):

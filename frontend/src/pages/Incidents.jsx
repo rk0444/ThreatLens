@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { ShieldAlert, AlertTriangle, CheckCircle, Clock, X, ChevronRight, Activity, FileText, Zap } from 'lucide-react';
+import { ShieldAlert, AlertTriangle, CheckCircle, Clock, X, ChevronRight, Activity, FileText, Zap, Brain, Copy } from 'lucide-react';
 import CustomDropdown from '../components/CustomDropdown';
 
 const timeAgo = (dateStr) => {
@@ -25,6 +25,41 @@ const STATUS_COLORS = {
   Resolved:      { bg: 'rgba(72,187,120,0.1)',  border: 'var(--success)',  text: 'var(--success)' },
 };
 
+const getMitreStageColor = (stage) => {
+  const colors = {
+    'Initial Access': '#dc2626',
+    'Execution': '#ea580c',
+    'Persistence': '#d97706',
+    'Privilege Escalation': '#ca8a04',
+    'Defense Evasion': '#65a30d',
+    'Credential Access': '#16a34a',
+    'Discovery': '#0891b2',
+    'Lateral Movement': '#2563eb',
+    'Collection': '#7c3aed',
+    'Exfiltration': '#c026d3',
+    'Command and Control': '#db2777',
+    'Impact': '#991b1b'
+  };
+  return colors[stage] || '#6b7280';
+};
+
+const copyToClipboard = async (text, stepId) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    // Show copied feedback
+    const btn = document.getElementById(`copy-btn-${stepId}`);
+    if (btn) {
+      const originalHTML = btn.innerHTML;
+      btn.innerHTML = '<CheckCircle size={16} color="var(--success)" />';
+      setTimeout(() => {
+        btn.innerHTML = originalHTML;
+      }, 2000);
+    }
+  } catch (err) {
+    console.error('Failed to copy:', err);
+  }
+};
+
 const Incidents = () => {
   const [incidents, setIncidents] = useState([]);
   const [selected, setSelected]   = useState(null);
@@ -35,6 +70,8 @@ const Incidents = () => {
   const [analystNote, setAnalystNote] = useState('');
   const [filter, setFilter]        = useState({ severity: 'All', status: 'All' });
   const [expandSandbox, setExpandSandbox] = useState(false);
+  const [correlationData, setCorrelationData] = useState(null);
+  const [loadingCorrelation, setLoadingCorrelation] = useState(false);
   const listRef = useRef(null);
 
   const fetchIncidents = () => {
@@ -72,6 +109,17 @@ const Incidents = () => {
     setPlaybook(null);
     setExpandSandbox(false);
     setAnalystNote('');
+    setCorrelationData(null);
+    
+    // Fetch correlation data
+    setLoadingCorrelation(true);
+    fetch(`http://127.0.0.1:8001/api/incidents/${inc.id}/correlations`)
+      .then(r => r.json())
+      .then(data => {
+        setCorrelationData(data);
+        setLoadingCorrelation(false);
+      })
+      .catch(() => setLoadingCorrelation(false));
   };
 
   const handleRespond = async (action) => {
@@ -255,20 +303,113 @@ const Incidents = () => {
                 </div>
               </div>
 
-              {/* AI Summary */}
-              {selected.ai_summary && (
-                <div className="description-box">
-                  <div className="label-small" style={{ marginBottom: '0.5rem' }}>AI ANALYSIS</div>
-                  <p style={{ lineHeight: 1.6 }}>{selected.ai_summary}</p>
-                  {selected.mitre_tags?.length > 0 && (
-                    <div style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                      {selected.mitre_tags.map((tag, i) => (
-                        <span key={i} style={{ fontFamily: 'JetBrains Mono', background: 'rgba(184,146,42,0.1)', border: '1px solid var(--accent-gold)', color: 'var(--accent-gold)', padding: '0.15rem 0.5rem', borderRadius: '3px', fontSize: '0.75rem' }}>{tag}</span>
-                      ))}
+              {/* Correlation Section */}
+              {correlationData && correlationData.correlation_statement && (
+                <div style={{ 
+                  background: 'linear-gradient(135deg, rgba(251, 191, 36, 0.15), rgba(245, 158, 11, 0.15))', 
+                  border: '1px solid #f59e0b', 
+                  borderRadius: '6px', 
+                  padding: '1rem', 
+                  marginBottom: '2rem'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
+                    <AlertTriangle size={20} color="#f59e0b" />
+                    <div style={{ fontWeight: 600, fontSize: '0.9rem', color: '#f59e0b' }}>THREAT CORRELATION</div>
+                  </div>
+                  <div style={{ fontSize: '0.85rem', lineHeight: 1.5, color: '#f59e0b' }}>
+                    {correlationData.correlation_statement}
+                  </div>
+                  {correlationData.related_cves && correlationData.related_cves.length > 0 && (
+                    <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: '#f59e0b' }}>
+                      <strong>Related CVEs:</strong> {correlationData.related_cves.join(', ')}
                     </div>
                   )}
                 </div>
               )}
+
+              {/* Enhanced AI Summary */}
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                  <Brain size={18} color="var(--accent-gold)" />
+                  <div className="label-small" style={{ margin: 0 }}>AI ANALYST SUMMARY</div>
+                </div>
+                
+                {selected.ai_summary ? (
+                  <div style={{ 
+                    background: 'rgba(255,255,255,0.02)', 
+                    border: '1px solid var(--border)', 
+                    borderRadius: '6px', 
+                    padding: '1.25rem' 
+                  }}>
+                    <div style={{ color: 'var(--text-secondary)', lineHeight: 1.6, fontSize: '0.9rem', marginBottom: '1rem' }}>
+                      {selected.ai_summary}
+                    </div>
+                    
+                    {/* MITRE ATT&CK Stage Badge */}
+                    {selected.mitre_tags && selected.mitre_tags.length > 0 && (
+                      <div style={{ marginBottom: '1rem' }}>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>MITRE ATT&CK Classification</div>
+                        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                          {selected.mitre_tags.map((tag, idx) => {
+                            // Check if this tag is a MITRE stage
+                            const stages = ['Initial Access', 'Execution', 'Persistence', 'Privilege Escalation', 'Defense Evasion', 'Credential Access', 'Discovery', 'Lateral Movement', 'Collection', 'Exfiltration', 'Command and Control', 'Impact'];
+                            const isStage = stages.includes(tag);
+                            
+                            return (
+                              <div key={idx}>
+                                {isStage ? (
+                                  <div 
+                                    style={{ 
+                                      display: 'inline-block',
+                                      background: getMitreStageColor(tag),
+                                      color: 'white',
+                                      padding: '0.75rem 1.25rem',
+                                      borderRadius: '25px',
+                                      fontSize: '0.9rem',
+                                      fontWeight: 600,
+                                      textTransform: 'uppercase',
+                                      letterSpacing: '0.5px',
+                                      boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
+                                    }}
+                                  >
+                                    {tag}
+                                  </div>
+                                ) : (
+                                  <span 
+                                    style={{ 
+                                      background: 'rgba(255,255,255,0.1)',
+                                      border: '1px solid var(--border)',
+                                      color: 'var(--text-secondary)',
+                                      padding: '0.25rem 0.75rem',
+                                      borderRadius: '12px',
+                                      fontSize: '0.75rem',
+                                      fontFamily: 'JetBrains Mono'
+                                    }}
+                                  >
+                                    {tag}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ 
+                    background: 'rgba(255,255,255,0.02)', 
+                    border: '1px solid var(--border)', 
+                    borderRadius: '6px', 
+                    padding: '1.25rem',
+                    textAlign: 'center',
+                    color: 'var(--text-muted)',
+                    fontSize: '0.85rem'
+                  }}>
+                    AI analysis unavailable. Check back later.
+                  </div>
+                )}
+              </div>
 
               {/* Sandbox Report */}
               {selected.sandbox_verdict && (
@@ -329,7 +470,7 @@ const Incidents = () => {
                 )}
               </div>
 
-              {/* Remediation Playbook */}
+              {/* Enhanced Remediation Playbook */}
               <div>
                 {!playbook ? (
                   <button
@@ -342,21 +483,169 @@ const Incidents = () => {
                   </button>
                 ) : (
                   <div>
-                    <div className="label-small" style={{ marginBottom: '1rem' }}>REMEDIATION PLAYBOOK</div>
+                    <div className="label-small" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <FileText size={16} />
+                      REMEDIATION PLAYBOOK
+                      <span style={{ 
+                        marginLeft: 'auto', 
+                        fontSize: '0.7rem', 
+                        color: 'var(--text-muted)',
+                        background: 'rgba(255,255,255,0.05)',
+                        padding: '0.2rem 0.5rem',
+                        borderRadius: '10px'
+                      }}>
+                        {playbook.total_steps || playbook.steps?.length || 0} steps
+                      </span>
+                    </div>
+                    
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      {playbook.playbook.map((step, i) => (
-                        <div key={i} style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border)', borderRadius: '4px', padding: '0.75rem 1rem' }}>
-                          <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: step.priority === 'Immediate' ? 'rgba(229,62,62,0.2)' : step.priority === 'High' ? 'rgba(236,153,75,0.2)' : 'rgba(255,255,255,0.05)', border: `1px solid ${step.priority === 'Immediate' ? 'var(--danger)' : step.priority === 'High' ? 'var(--warning)' : 'var(--border)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 700, fontSize: '0.85rem', flexShrink: 0, color: step.priority === 'Immediate' ? 'var(--danger)' : step.priority === 'High' ? 'var(--warning)' : 'var(--text-muted)' }}>
+                      {playbook.steps?.map((step, i) => (
+                        <div key={i} style={{ 
+                          display: 'flex', 
+                          gap: '1rem', 
+                          alignItems: 'flex-start', 
+                          background: 'rgba(255,255,255,0.02)', 
+                          border: '1px solid var(--border)', 
+                          borderRadius: '6px', 
+                          padding: '1rem',
+                          position: 'relative'
+                        }}>
+                          {/* Step Number */}
+                          <div style={{ 
+                            width: '32px', 
+                            height: '32px', 
+                            borderRadius: '50%', 
+                            background: step.priority === 'immediate' ? 'rgba(229,62,62,0.2)' : 
+                                       step.priority === 'high' ? 'rgba(236,153,75,0.2)' : 
+                                       step.priority === 'medium' ? 'rgba(245,158,11,0.2)' : 
+                                       'rgba(255,255,255,0.05)', 
+                            border: `1px solid ${
+                              step.priority === 'immediate' ? 'var(--danger)' : 
+                              step.priority === 'high' ? 'var(--warning)' : 
+                              step.priority === 'medium' ? 'var(--accent-gold)' : 
+                              'var(--border)'
+                            }`, 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'center', 
+                            fontWeight: 700, 
+                            fontSize: '0.9rem', 
+                            flexShrink: 0, 
+                            color: step.priority === 'immediate' ? 'var(--danger)' : 
+                                   step.priority === 'high' ? 'var(--warning)' : 
+                                   step.priority === 'medium' ? 'var(--accent-gold)' : 
+                                   'var(--text-muted)',
+                            boxShadow: step.priority === 'immediate' ? '0 0 12px rgba(229,62,62,0.3)' : 'none'
+                          }}>
                             {step.step}
                           </div>
+                          
+                          {/* Step Content */}
                           <div style={{ flex: 1 }}>
-                            <div style={{ fontSize: '0.9rem', color: 'var(--text-primary)' }}>{step.action}</div>
-                            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>{step.priority}</div>
+                            <div style={{ 
+                              fontSize: '0.95rem', 
+                              color: 'var(--text-primary)', 
+                              marginBottom: '0.5rem',
+                              fontWeight: 500,
+                              lineHeight: 1.4
+                            }}>
+                              {step.action}
+                            </div>
+                            
+                            {/* Command Block */}
+                            {step.command && (
+                              <div style={{ 
+                                background: 'rgba(0,0,0,0.4)', 
+                                border: '1px solid var(--border)', 
+                                borderRadius: '4px', 
+                                padding: '0.75rem', 
+                                marginBottom: '0.5rem',
+                                fontFamily: 'JetBrains Mono',
+                                fontSize: '0.8rem',
+                                color: '#e5e7eb',
+                                position: 'relative',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between'
+                              }}>
+                                <code style={{ background: 'none', border: 'none', padding: 0, color: 'inherit' }}>
+                                  {step.command}
+                                </code>
+                                <button
+                                  id={`copy-btn-${i}`}
+                                  onClick={() => copyToClipboard(step.command, i)}
+                                  style={{
+                                    background: 'rgba(255,255,255,0.1)',
+                                    border: '1px solid var(--border)',
+                                    borderRadius: '4px',
+                                    padding: '0.25rem 0.5rem',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    transition: 'all 0.2s'
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.target.style.background = 'rgba(255,255,255,0.2)';
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.target.style.background = 'rgba(255,255,255,0.1)';
+                                  }}
+                                >
+                                  <Copy size={14} color="var(--text-secondary)" />
+                                </button>
+                              </div>
+                            )}
+                            
+                            {/* Step Metadata */}
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem' }}>
+                              <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                                <span style={{ 
+                                  color: step.priority === 'immediate' ? 'var(--danger)' : 
+                                         step.priority === 'high' ? 'var(--warning)' : 
+                                         step.priority === 'medium' ? 'var(--accent-gold)' : 
+                                         'var(--text-muted)',
+                                  fontWeight: 600,
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.5px'
+                                }}>
+                                  {step.priority}
+                                </span>
+                                {step.estimated_time && (
+                                  <span style={{ color: 'var(--text-muted)' }}>
+                                    ⏱ {step.estimated_time}
+                                  </span>
+                                )}
+                              </div>
+                              <span style={{ 
+                                color: step.risk_level === 'critical' ? 'var(--danger)' : 
+                                       step.risk_level === 'high' ? 'var(--warning)' : 
+                                       step.risk_level === 'medium' ? 'var(--accent-gold)' : 
+                                       'var(--text-muted)'
+                              }}>
+                                {step.risk_level} risk
+                              </span>
+                            </div>
                           </div>
                         </div>
                       ))}
                     </div>
-                    {playbook.note && <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '0.75rem', fontStyle: 'italic' }}>{playbook.note}</p>}
+                    
+                    {/* Playbook Footer */}
+                    <div style={{ 
+                      marginTop: '1rem', 
+                      padding: '0.75rem', 
+                      background: 'rgba(255,255,255,0.02)', 
+                      border: '1px solid var(--border)', 
+                      borderRadius: '4px',
+                      fontSize: '0.8rem',
+                      color: 'var(--text-muted)',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center'
+                    }}>
+                      <span>Confidence: {Math.round((playbook.confidence_score || 0.8) * 100)}%</span>
+                      <span>Generated: {new Date(playbook.generated_at).toLocaleString()}</span>
+                    </div>
                   </div>
                 )}
               </div>

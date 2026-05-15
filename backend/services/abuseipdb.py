@@ -7,7 +7,7 @@ load_dotenv()
 ABUSEIPDB_API_KEY = os.getenv("ABUSEIPDB_API_KEY")
 ABUSEIPDB_URL = "https://api.abuseipdb.com/api/v2/check"
 
-from ..database import models
+from database import models
 from datetime import datetime, timezone
 
 def check_ip_reputation(ip: str, db_session=None, machine_id=None, machine_hostname=None):
