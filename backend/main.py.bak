@@ -1356,6 +1356,234 @@ ANALYST QUESTION:
         raise HTTPException(status_code=500, detail=f"AI service error: {str(e)}")
 
 
+# ============================================================
+# ADD THIS ENTIRE BLOCK to the end of backend/main.py
+# ============================================================
+
+COUNTRY_COORDS = {
+    "China":       {"lat": 35.86,  "lng": 104.19},
+    "Russia":      {"lat": 55.75,  "lng": 37.61},
+    "Iran":        {"lat": 35.68,  "lng": 51.38},
+    "North Korea": {"lat": 39.02,  "lng": 125.75},
+    "USA":         {"lat": 37.09,  "lng": -95.71},
+    "UK":          {"lat": 51.50,  "lng": -0.12},
+    "Israel":      {"lat": 31.77,  "lng": 35.21},
+    "Germany":     {"lat": 51.16,  "lng": 10.45},
+    "Ukraine":     {"lat": 48.37,  "lng": 31.16},
+    "Vietnam":     {"lat": 14.05,  "lng": 108.27},
+    "Pakistan":    {"lat": 30.37,  "lng": 69.34},
+    "India":       {"lat": 20.59,  "lng": 78.96},
+    "Brazil":      {"lat": -14.23, "lng": -51.92},
+}
+
+OSINT_COUNTRY_HINTS = {
+    "china": "China", "chinese": "China", "prc": "China",
+    "taiwan": "China", "beijing": "China", "volt typhoon": "China",
+    "salt typhoon": "China", "apt41": "China", "hafnium": "China",
+    "apt1": "China", "apt10": "China", "apt19": "China",
+    "russia": "Russia", "russian": "Russia", "sandworm": "Russia",
+    "apt28": "Russia", "apt29": "Russia", "cozy bear": "Russia",
+    "fancy bear": "Russia", "turla": "Russia", "wizard spider": "Russia",
+    "indrik spider": "Russia", "conti": "Russia",
+    "iran": "Iran", "iranian": "Iran", "oilrig": "Iran",
+    "apt33": "Iran", "apt34": "Iran", "muddywater": "Iran",
+    "magic hound": "Iran", "fox kitten": "Iran",
+    "north korea": "North Korea", "dprk": "North Korea",
+    "lazarus": "North Korea", "kimsuky": "North Korea", "apt38": "North Korea",
+    "israel": "Israel", "vietnam": "Vietnam", "pakistan": "Pakistan",
+}
+
+SECTOR_KEYWORDS = {
+    "Financial":     ["bank", "financial", "payment", "fintech", "swift", "credit", "fraud", "crypto", "ransomware"],
+    "Government":    ["government", "ministry", "federal", "nato", "military", "defense", "embassy", "election"],
+    "Energy":        ["energy", "grid", "power", "oil", "gas", "pipeline", "utility", "nuclear"],
+    "Healthcare":    ["hospital", "health", "medical", "pharma", "patient", "clinic"],
+    "Technology":    ["software", "cloud", "saas", "developer", "supply chain", "open source", "npm", "docker", "kubernetes"],
+    "Telecom":       ["telecom", "carrier", "isp", "mobile", "network", "5g", "router"],
+    "Manufacturing": ["manufacturing", "industrial", "scada", "ics", "factory"],
+    "Education":     ["university", "academic", "research", "college", "student", "ngo"],
+}
+
+
+@app.get("/api/attack-map")
+async def get_attack_map(db: Session = Depends(db.get_db)):
+    from collections import defaultdict
+    import json as _json
+
+    # 1. Real MITRE groups
+    mg_rows = db.execute(text(
+        "SELECT mitre_id, name, country, motivation, techniques FROM mitre_groups"
+    )).fetchall()
+
+    actor_index = {}
+    for mitre_id, name, country, motivation, techniques in mg_rows:
+        tech_list = []
+        if techniques:
+            try:
+                tech_list = _json.loads(techniques)[:8]
+            except Exception:
+                pass
+        actor_index[name] = {
+            "mitre_id": mitre_id,
+            "country": country or "Unknown",
+            "motivation": motivation or "Unknown",
+            "techniques": tech_list,
+        }
+
+    # 2. Real CVE counts per actor
+    cve_counts = db.execute(text("""
+        SELECT group_name, COUNT(DISTINCT cve_id) as cnt,
+               GROUP_CONCAT(DISTINCT cve_id) as ids
+        FROM cve_to_groups GROUP BY group_name
+    """)).fetchall()
+
+    actor_cve_map = {}
+    for name, cnt, ids in cve_counts:
+        actor_cve_map[name] = {
+            "cve_count": cnt,
+            "cve_ids": (ids or "").split(",")[:10],
+        }
+
+    # 3. threat_actors table extra links
+    for name, assoc in db.execute(text("SELECT name, associated_cves FROM threat_actors")).fetchall():
+        try:
+            ids = _json.loads(assoc or "[]")
+        except Exception:
+            ids = []
+        if name not in actor_cve_map:
+            actor_cve_map[name] = {"cve_count": len(ids), "cve_ids": ids[:10]}
+        else:
+            merged = list(set(actor_cve_map[name]["cve_ids"]) | set(ids))[:10]
+            actor_cve_map[name]["cve_ids"] = merged
+            actor_cve_map[name]["cve_count"] = max(actor_cve_map[name]["cve_count"], len(ids))
+
+    # 4. Active incidents — MITRE tag matching
+    inc_rows = db.execute(text("""
+        SELECT mitre_tags, severity FROM incidents
+        WHERE status != 'Resolved' ORDER BY created_at DESC LIMIT 50
+    """)).fetchall()
+
+    active_incident_count = len(inc_rows)
+    incident_actor_hits = defaultdict(int)
+    for tags, sev in inc_rows:
+        if tags:
+            try:
+                for tag in _json.loads(tags):
+                    for aname in actor_index:
+                        if aname.lower() in tag.lower():
+                            incident_actor_hits[aname] += 1
+            except Exception:
+                pass
+
+    # 5. Real OSINT alerts — parse country, sector, actor mentions
+    osint_rows = db.execute(text("""
+        SELECT source, indicator, description, severity, created_at
+        FROM osint_alerts ORDER BY created_at DESC LIMIT 200
+    """)).fetchall()
+
+    osint_by_country  = defaultdict(int)
+    osint_actor_hits  = defaultdict(int)
+    osint_sectors     = defaultdict(int)
+    ticker_items      = []
+
+    for source, indicator, description, severity, created_at in osint_rows:
+        desc_lower = (description or indicator or "").lower()
+
+        detected_country = None
+        for kw, country in OSINT_COUNTRY_HINTS.items():
+            if kw in desc_lower:
+                detected_country = country
+                break
+        if detected_country:
+            osint_by_country[detected_country] += 1
+
+        for aname in actor_index:
+            if aname.lower() in desc_lower:
+                osint_actor_hits[aname] += 1
+
+        for sector, keywords in SECTOR_KEYWORDS.items():
+            if any(kw in desc_lower for kw in keywords):
+                osint_sectors[sector] += 1
+
+        short = (indicator or description or "")[:120]
+        sev_tag = "[RED]" if severity == "High" else "[ORANGE]" if severity == "Medium" else "[WHITE]"
+        ticker_items.append(f"{sev_tag} {short}")
+
+    # 6. Build country nodes from real data
+    country_data = defaultdict(lambda: {
+        "actors": [], "cve_count": 0, "osint_count": 0,
+        "top_cves": [], "activity_score": 0,
+    })
+
+    for aname, ainfo in actor_index.items():
+        country = ainfo["country"]
+        if country == "Unknown" or country not in COUNTRY_COORDS:
+            continue
+
+        cve_info       = actor_cve_map.get(aname, {"cve_count": 0, "cve_ids": []})
+        inc_boost      = incident_actor_hits.get(aname, 0)
+        osint_boost    = osint_actor_hits.get(aname, 0)
+
+        country_data[country]["actors"].append({
+            "name": aname,
+            "mitre_id": ainfo["mitre_id"],
+            "motivation": ainfo["motivation"],
+            "techniques": ainfo["techniques"],
+            "cve_count": cve_info["cve_count"],
+            "cve_ids": cve_info["cve_ids"],
+            "incident_hits": inc_boost,
+            "osint_hits": osint_boost,
+        })
+        country_data[country]["cve_count"]      += cve_info["cve_count"]
+        country_data[country]["top_cves"]       += cve_info["cve_ids"]
+        country_data[country]["activity_score"] += (
+            cve_info["cve_count"] + inc_boost * 5 + osint_boost * 3
+        )
+
+    for country, count in osint_by_country.items():
+        if country in country_data:
+            country_data[country]["osint_count"]    += count
+            country_data[country]["activity_score"] += count * 2
+
+    # 7. Serialize
+    nodes = []
+    for country, data in country_data.items():
+        coords = COUNTRY_COORDS[country]
+        score  = data["activity_score"]
+        threat_level = (
+            "critical" if score > 500 else
+            "high"     if score > 200 else
+            "medium"   if score > 50  else
+            "low"
+        )
+        nodes.append({
+            "country":        country,
+            "lat":            coords["lat"],
+            "lng":            coords["lng"],
+            "threat_level":   threat_level,
+            "activity_score": score,
+            "actor_count":    len(data["actors"]),
+            "cve_count":      data["cve_count"],
+            "osint_count":    data["osint_count"],
+            "sectors":        list(osint_sectors.keys())[:5],
+            "top_cves":       list(set(data["top_cves"]))[:8],
+            "actors":         sorted(
+                data["actors"],
+                key=lambda a: a["cve_count"] + a["osint_hits"] * 3,
+                reverse=True
+            )[:10],
+        })
+
+    nodes.sort(key=lambda n: n["activity_score"], reverse=True)
+
+    total_cves = db.execute(text("SELECT COUNT(*) FROM cves")).fetchone()[0]
+    kev_count  = db.execute(text("SELECT COUNT(*) FROM cisa_kev")).fetchone()[0]
+    osint_total = db.execute(text("SELECT COUNT(*) FROM osint_alerts")).fetchone()[0]
+
+    # ============================================================
+# ADD THIS ENTIRE BLOCK to the end of backend/main.py
+# ============================================================
+ 
 COUNTRY_COORDS = {
     "China":       {"lat": 35.86,  "lng": 104.19},
     "Russia":      {"lat": 55.75,  "lng": 37.61},

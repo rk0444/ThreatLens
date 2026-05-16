@@ -12,6 +12,7 @@ import Incidents from './pages/Incidents';
 import Settings from './pages/Settings';
 import Onboarding from './pages/Onboarding';
 import AICopilot from './pages/AICopilot';
+import AttackMap from './pages/AttackMap';
 
 function App() {
   return (
@@ -30,6 +31,7 @@ function App() {
               <Route path="/settings" element={<Settings />} />
               <Route path="/onboarding" element={<Onboarding />} />
               <Route path="/copilot" element={<AICopilot />} />
+              <Route path="/attackmap" element={<AttackMap />} />
             </Routes>
           </main>
         </div>
