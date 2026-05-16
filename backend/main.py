@@ -2,6 +2,7 @@ from fastapi import (
     FastAPI,
     Depends,
     HTTPException,
+    Request,
     WebSocket,
     WebSocketDisconnect,
 )
@@ -1190,6 +1191,168 @@ async def get_top_threat_actors(db: Session = Depends(db.get_db)):
     return top_groups
 
 
+# ── AI ANALYST COPILOT ──────────────────────────────────────────────────────
 
+@app.post("/api/copilot/ask")
+async def copilot_ask(request: Request, db: Session = Depends(db.get_db)):
+    """
+    AI Analyst Copilot — natural language Q&A on CVEs, alerts, IOCs.
+    Uses OpenAI GPT-4o with live context pulled from the DB.
+    """
+    import os
+    from openai import AsyncOpenAI
+
+    body = await request.json()
+    question = (body.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    # --- Build live context from DB ---
+    context_parts = []
+
+    # Top 10 CVEs by risk
+    top_cves = (
+        db.query(models.CVE)
+        .order_by(models.CVE.cvss_score.desc().nullslast())
+        .limit(10)
+        .all()
+    )
+    if top_cves:
+        cve_lines = []
+        for c in top_cves:
+            kev = " [KEV]" if c.cisa_kev else ""
+            epss = f" EPSS:{round((c.epss_score or 0)*100, 1)}%" if c.epss_score else ""
+            cve_lines.append(
+                f"  - {c.cve_id} CVSS:{c.cvss_score or 'N/A'}{epss}{kev} | {(c.description or '')[:120]}"
+            )
+        context_parts.append("TOP CVEs IN DATABASE:\n" + "\n".join(cve_lines))
+
+    # Active incidents
+    active_incidents = (
+        db.query(models.Incident)
+        .filter(models.Incident.status == "Active")
+        .limit(5)
+        .all()
+    )
+    if active_incidents:
+        inc_lines = [
+            f"  - [{i.severity}] {i.type}: {(i.description or i.details or '')[:100]}"
+            for i in active_incidents
+        ]
+        context_parts.append("ACTIVE INCIDENTS:\n" + "\n".join(inc_lines))
+
+    # OSINT alerts
+    osint = (
+        db.query(models.OsintAlert)
+        .order_by(models.OsintAlert.created_at.desc())
+        .limit(5)
+        .all()
+    )
+    if osint:
+        osint_lines = [
+            f"  - [{o.severity}] {o.indicator} ({o.type}): {(o.description or '')[:100]}"
+            for o in osint
+        ]
+        context_parts.append("RECENT OSINT ALERTS:\n" + "\n".join(osint_lines))
+
+    # If question mentions a specific CVE, pull full detail
+    import re
+    cve_mentions = re.findall(r'CVE-\d{4}-\d+', question.upper())
+    for cve_id in cve_mentions[:3]:
+        cve = db.query(models.CVE).filter(models.CVE.cve_id == cve_id).first()
+        if cve:
+            actors = db.query(models.CveToGroup).filter(
+                models.CveToGroup.cve_id == cve_id
+            ).all()
+            actor_str = ", ".join(a.group_name for a in actors) if actors else "None linked"
+            context_parts.append(
+                f"DETAIL FOR {cve_id}:\n"
+                f"  Description: {cve.description or 'N/A'}\n"
+                f"  CVSS: {cve.cvss_score} | EPSS: {round((cve.epss_score or 0)*100,1)}%\n"
+                f"  KEV: {bool(cve.cisa_kev)} | Ransomware: {bool(cve.ransomware_use)}\n"
+                f"  Actively Exploited: {bool(cve.actively_exploited)}\n"
+                f"  Threat Actors: {actor_str}\n"
+                f"  AI Summary: {cve.ai_summary or 'Not yet generated'}"
+            )
+
+    # If question mentions an IP/hash/domain, pull OSINT
+    ioc_pattern = re.findall(
+        r'\b(?:\d{1,3}\.){3}\d{1,3}\b|'
+        r'\b[a-fA-F0-9]{32,64}\b|'
+        r'\b(?:[a-z0-9\-]+\.)+(?:com|net|org|io|ru|cn|ir|gov)\b',
+        question
+    )
+    for ioc in ioc_pattern[:3]:
+        alert = db.query(models.OsintAlert).filter(
+            models.OsintAlert.indicator == ioc
+        ).first()
+        if alert:
+            context_parts.append(
+                f"IOC MATCH — {ioc}:\n"
+                f"  Type: {alert.type} | Severity: {alert.severity}\n"
+                f"  Source: {alert.source}\n"
+                f"  Description: {alert.description or 'N/A'}"
+            )
+
+    # Threat actor stats
+    total_cves = db.query(models.CVE).count()
+    kev_count = db.query(models.CVE).filter(models.CVE.cisa_kev == True).count()
+    incident_count = db.query(models.Incident).filter(models.Incident.status == "Active").count()
+
+    context_parts.append(
+        f"PLATFORM STATS:\n"
+        f"  Total CVEs tracked: {total_cves}\n"
+        f"  CISA KEV entries: {kev_count}\n"
+        f"  Active incidents: {incident_count}"
+    )
+
+    context_block = "\n\n".join(context_parts)
+
+    system_prompt = """You are ThreatLens AI, an expert cybersecurity analyst assistant embedded in a threat intelligence platform.
+
+You have access to live data from the platform including CVEs, incidents, OSINT alerts, and threat actor mappings.
+
+Your role:
+- Answer questions about specific CVEs, IOCs, threat actors, and incidents using the provided context
+- Assess exploitation likelihood and business impact clearly
+- Give concise, actionable answers — not walls of text
+- Flag if a CVE is on the CISA KEV list, actively exploited, or linked to ransomware groups
+- Be direct: security teams need fast, clear answers
+
+Format:
+- Use short paragraphs or bullet points as appropriate
+- Lead with the most important finding
+- End with a concrete recommended action if relevant
+- Keep responses under 300 words unless the question genuinely requires more detail
+
+If you don't have enough data to answer confidently, say so clearly rather than speculating."""
+
+    user_prompt = f"""LIVE PLATFORM CONTEXT:
+{context_block}
+
+ANALYST QUESTION:
+{question}"""
+
+    try:
+        client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = await client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=600,
+            temperature=0.2,
+        )
+        answer = response.choices[0].message.content.strip()
+        return {
+            "answer": answer,
+            "context_used": len(context_parts),
+            "cves_referenced": cve_mentions,
+            "iocs_checked": ioc_pattern,
+        }
+    except Exception as e:
+        logger.error(f"[COPILOT] OpenAI error: {e}")
+        raise HTTPException(status_code=500, detail=f"AI service error: {str(e)}")
 
 

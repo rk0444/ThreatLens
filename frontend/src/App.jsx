@@ -11,6 +11,7 @@ import Endpoints from './pages/Endpoints';
 import Incidents from './pages/Incidents';
 import Settings from './pages/Settings';
 import Onboarding from './pages/Onboarding';
+import AICopilot from './pages/AICopilot';
 
 function App() {
   return (
@@ -28,6 +29,7 @@ function App() {
               <Route path="/incidents" element={<Incidents />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/onboarding" element={<Onboarding />} />
+              <Route path="/copilot" element={<AICopilot />} />
             </Routes>
           </main>
         </div>
@@ -38,3 +40,4 @@ function App() {
 }
 
 export default App;
+
