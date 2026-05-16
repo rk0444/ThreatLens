@@ -6,18 +6,22 @@ A unified cybersecurity platform that simultaneously monitors the entire interne
 
 - **Real-time Threat Intelligence**: Monitors global threat feeds including CVE databases, OSINT alerts, and IP reputation data
 - **Local Attack Detection**: Watches your machines for active security breaches and suspicious activities
-- **AI-Powered Analysis**: Uses advanced AI to rank, explain, and prioritize threats automatically
+- **AI-Powered Analysis**: Uses advanced AI (LangChain, OpenAI, Groq) to rank, explain, and prioritize threats automatically
+- **Vector Database**: ChromaDB integration for intelligent threat similarity search and context retrieval
 - **Unified Dashboard**: Single interface for both global and local security monitoring
 - **Real-time Updates**: WebSocket-based live threat updates and notifications
 - **Cross-Platform**: Available as both web application and desktop app (Electron)
+- **Security Agents**: Network monitoring, process monitoring, and automated response capabilities
 
 ## 🏗️ Architecture
 
-- **Frontend**: React + Vite with modern UI components (Recharts, D3.js, Framer Motion)
+- **Frontend**: React 19 + Vite with modern UI components (Recharts, D3.js, Framer Motion, Lucide React)
 - **Backend**: FastAPI with SQLAlchemy for database management
+- **AI/ML Stack**: LangChain, OpenAI, Groq, ChromaDB for intelligent threat analysis
 - **Desktop App**: Electron wrapper for cross-platform desktop deployment
-- **Database**: SQLite with SQLAlchemy ORM
+- **Database**: SQLite with SQLAlchemy ORM + ChromaDB vector database
 - **Real-time Communication**: WebSocket support for live updates
+- **Security Agents**: Network monitor, process monitor, sandbox, and automated responder
 
 ## 📦 Installation
 
@@ -35,22 +39,34 @@ A unified cybersecurity platform that simultaneously monitors the entire interne
    cd ThreatLens
    ```
 
-2. **Install dependencies**
+2. **Set up Python virtual environment**
    ```bash
-   # Install root dependencies
+   python -m venv .venv
+   # Windows
+   .venv\Scripts\activate
+   # Linux/Mac
+   source .venv/bin/activate
+   ```
+
+3. **Install dependencies**
+   ```bash
+   # Install Python backend dependencies
+   pip install -r backend/requirements.txt
+   
+   # Install root Node.js dependencies
    npm install
    
    # Install frontend dependencies
    cd frontend && npm install && cd ..
    ```
 
-3. **Set up environment variables**
+4. **Set up environment variables**
    ```bash
    cp .env.example .env
    # Edit .env with your API keys and configuration
    ```
 
-4. **Run the development server**
+5. **Run the development server**
    ```bash
    npm run dev
    ```
@@ -80,6 +96,19 @@ DATABASE_URL=sqlite:///./backend/database/threatlens.sqlite
 NVD_API_KEY=your_nvd_api_key
 ABUSEIPDB_API_KEY=your_abuseipdb_api_key
 
+# AI/ML Configuration
+OPENAI_API_KEY=your_openai_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
+
+# AI Model Configuration
+GROQ_MODEL=llama-3-70b-8192
+OPENAI_MODEL=gpt-4o
+
+# Vector Store Configuration
+CHROMA_PERSIST_DIRECTORY=./backend/database/chroma
+CHROMA_COLLECTION_THREATS=threat_intelligence
+CHROMA_COLLECTION_INCIDENTS=incidents
+
 # Application Settings
 DEBUG=true
 LOG_LEVEL=INFO
@@ -101,17 +130,24 @@ Once the backend is running, visit `http://localhost:8000/docs` for interactive 
 ```
 ThreatLens/
 ├── agent/              # Security monitoring agents
+│   ├── network_monitor.py   # Network traffic monitoring
+│   ├── process_monitor.py   # Process activity monitoring
+│   ├── responder.py          # Automated threat response
+│   └── sandbox.py           # Isolated execution environment
 ├── backend/            # FastAPI backend application
 │   ├── database/      # Database models and schemas
 │   ├── services/      # External API integrations
-│   └── main.py        # Main FastAPI application
+│   ├── main.py        # Main FastAPI application
+│   └── requirements.txt # Python dependencies
 ├── frontend/          # React frontend application
 │   ├── src/          # React components and pages
-│   └── public/       # Static assets
+│   ├── public/       # Static assets
+│   └── package.json  # Frontend dependencies
 ├── build/            # Electron build outputs
 ├── docker-compose.yml # Docker deployment configuration
 ├── main.js           # Electron main process
-└── package.json      # Root package configuration
+├── package.json      # Root package configuration
+└── .env.example      # Environment variables template
 ```
 
 ## 🛠️ Development
