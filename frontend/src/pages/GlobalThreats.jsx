@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import {  ChevronRight, Filter, Activity } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
 import ThreatGraph from '../components/ThreatGraph';
 import CveDrawer from '../components/CveDrawer';
 import CustomDropdown from '../components/CustomDropdown';
@@ -291,56 +292,64 @@ const GlobalThreats = () => {
               </tr>
             </thead>
             <tbody>
-              {loading ? (
-                [1,2,3,4,5].map(i => (
-                  <tr key={i}><td colSpan="8" style={{ padding: '1rem' }}><div className="skeleton" style={{ height: '20px' }}></div></td></tr>
-                ))
-              ) : (
-                sortedCves.map(cve => {
-                  const riskScore = getRiskScore(cve);
-                  const tier = getSeverityTier(riskScore);
-                  return (
-                    <tr 
-                      key={cve.id} 
-                      className="table-row" 
-                      onClick={() => setSelectedCve(cve)}
-                      style={{ borderBottom: '1px solid rgba(184, 146, 42, 0.05)', cursor: 'pointer' }}
-                    >
-                      <td style={{ padding: '1rem' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                          <div className="risk-badge" style={{ borderColor: getRiskColor(riskScore) }}>
-                            {riskScore}
+              <AnimatePresence>
+                {loading ? (
+                  [1,2,3,4,5].map(i => (
+                    <motion.tr key={`loading-${i}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                      <td colSpan="8" style={{ padding: '1rem' }}><div className="skeleton" style={{ height: '20px' }}></div></td>
+                    </motion.tr>
+                  ))
+                ) : (
+                  sortedCves.map(cve => {
+                    const riskScore = getRiskScore(cve);
+                    const tier = getSeverityTier(riskScore);
+                    return (
+                      <motion.tr 
+                        key={cve.id} 
+                        initial={{ opacity: 0, y: -20, backgroundColor: 'rgba(184, 146, 42, 0.5)' }}
+                        animate={{ opacity: 1, y: 0, backgroundColor: 'transparent' }}
+                        exit={{ opacity: 0, scale: 0.9 }}
+                        transition={{ duration: 0.5 }}
+                        className="table-row" 
+                        onClick={() => setSelectedCve(cve)}
+                        style={{ borderBottom: '1px solid rgba(184, 146, 42, 0.05)', cursor: 'pointer' }}
+                      >
+                        <td style={{ padding: '1rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                            <div className="risk-badge" style={{ borderColor: getRiskColor(riskScore) }}>
+                              {riskScore}
+                            </div>
+                            <span className={`severity-badge ${tier.className}`}>
+                              {tier.label}
+                            </span>
                           </div>
-                          <span className={`severity-badge ${tier.className}`}>
-                            {tier.label}
-                          </span>
-                        </div>
-                      </td>
-                      <td style={{ fontFamily: 'JetBrains Mono', color: 'var(--accent-gold)' }}>{cve.cve_id}</td>
-                      <td style={{ maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>
-                        {cve.description}
-                      </td>
-                      <td>{cve.cvss_score}</td>
-                      <td>{(cve.epss_score * 100).toFixed(1)}%</td>
-                      <td>
-                        {cve.actively_exploited ? (
-                          <span style={{ color: '#fc8181', fontWeight: 600, fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#fc8181', animation: 'pulseCritical 2s infinite' }}></div>
-                            {cve.ransomware_use ? '☠ RANSOM' : '● LIVE'}
-                          </span>
-                        ) : (
-                          <span style={{ color: 'var(--text-muted)' }}>—</span>
-                        )}
-                      </td>
-                      <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {formatAffectedProducts(cve.affected_products)}
-                      </td>
-                      <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{new Date(cve.published_date).toLocaleDateString()}</td>
-                      <td><ChevronRight size={18} color="var(--text-muted)" /></td>
-                    </tr>
-                  );
-                })
-              )}
+                        </td>
+                        <td style={{ fontFamily: 'JetBrains Mono', color: 'var(--accent-gold)' }}>{cve.cve_id}</td>
+                        <td style={{ maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>
+                          {cve.description}
+                        </td>
+                        <td>{cve.cvss_score}</td>
+                        <td>{(cve.epss_score * 100).toFixed(1)}%</td>
+                        <td>
+                          {cve.actively_exploited ? (
+                            <span style={{ color: '#fc8181', fontWeight: 600, fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                              <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#fc8181', animation: 'pulseCritical 2s infinite' }}></div>
+                              {cve.ransomware_use ? '☠ RANSOM' : '● LIVE'}
+                            </span>
+                          ) : (
+                            <span style={{ color: 'var(--text-muted)' }}>—</span>
+                          )}
+                        </td>
+                        <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {formatAffectedProducts(cve.affected_products)}
+                        </td>
+                        <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{new Date(cve.published_date).toLocaleDateString()}</td>
+                        <td><ChevronRight size={18} color="var(--text-muted)" /></td>
+                      </motion.tr>
+                    );
+                  })
+                )}
+              </AnimatePresence>
             </tbody>
           </table>
         </div>

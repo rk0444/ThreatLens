@@ -1,5 +1,6 @@
 /* eslint-env node */
 const { app, BrowserWindow, Tray, Menu, nativeImage, Notification, ipcMain } = require('electron');
+const fs = require('fs');
 const path = require('path');
 const isDev = !app.isPackaged;
 
@@ -60,18 +61,39 @@ function createWindow() {
   });
 }
 
+function installPythonDependencies() {
+  if (app.isPackaged) {
+    const { exec } = require('child_process');
+    const reqPath = path.join(process.resourcesPath, 'backend', 'requirements.txt');
+    if (fs.existsSync(reqPath)) {
+      console.log('Installing Python dependencies...');
+      exec(`python -m pip install -r "${reqPath}"`, (error, stdout, stderr) => {
+        if (error) {
+          console.error(`Failed to install dependencies: ${error}`);
+          return;
+        }
+        console.log('Dependencies installed successfully.');
+      });
+    }
+  }
+}
+
 function createTray() {
-  const icon = nativeImage.createEmpty(); 
+  const iconPath = path.join(__dirname, 'assets', 'icon.png');
+  const icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
   tray = new Tray(icon);
+  
   const contextMenu = Menu.buildFromTemplate([
-    { label: 'Open ThreatLens', click: () => { if (mainWindow) mainWindow.show(); } },
-    { label: 'Check Status', click: () => { 
-        new Notification({ title: 'ThreatLens V2.0', body: 'System is running.' }).show();
+    { label: 'ThreatLens V2.0', enabled: false },
+    { type: 'separator' },
+    { label: 'Open Dashboard', click: () => { if (mainWindow) mainWindow.show(); } },
+    { label: 'System Status', click: () => { 
+        new Notification({ title: 'ThreatLens Status', body: 'All systems operational. Actively monitoring.' }).show();
     } },
     { type: 'separator' },
-    { label: 'Quit', click: () => { app.quit(); } }
+    { label: 'Quit ThreatLens', click: () => { app.quit(); } }
   ]);
-  tray.setToolTip('ThreatLens V2.0');
+  tray.setToolTip('ThreatLens - Active Monitoring');
   tray.setContextMenu(contextMenu);
 }
 
@@ -84,8 +106,56 @@ ipcMain.handle('get-status', async () => {
   return { status: 'System Operational', timestamp: new Date().toISOString() };
 });
 
+ipcMain.handle('read-env', async () => {
+  const envPath = path.join(__dirname, '.env');
+  if (fs.existsSync(envPath)) {
+    const content = fs.readFileSync(envPath, 'utf8');
+    const env = {};
+    content.split('\n').forEach(line => {
+      const match = line.match(/^([^=]+)=(.*)$/);
+      if (match) env[match[1].trim()] = match[2].trim();
+    });
+    return env;
+  }
+  return {};
+});
+
+ipcMain.handle('write-env', async (event, envData) => {
+  const envPath = path.join(__dirname, '.env');
+  let currentEnv = {};
+  if (fs.existsSync(envPath)) {
+    const content = fs.readFileSync(envPath, 'utf8');
+    content.split('\n').forEach(line => {
+      const match = line.match(/^([^=]+)=(.*)$/);
+      if (match) currentEnv[match[1].trim()] = match[2].trim();
+    });
+  }
+  const updatedEnv = { ...currentEnv, ...envData };
+  const envString = Object.entries(updatedEnv)
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n');
+  fs.writeFileSync(envPath, envString, 'utf8');
+  return true;
+});
+
+ipcMain.handle('get-app-info', async () => {
+  return {
+    version: app.getVersion(),
+    buildDate: new Date().toISOString().split('T')[0], // Approximation for now
+  };
+});
+
+ipcMain.handle('toggle-auto-launch', async (event, enable) => {
+  app.setLoginItemSettings({
+    openAtLogin: enable,
+    path: app.getPath('exe')
+  });
+  return app.getLoginItemSettings().openAtLogin;
+});
+
 
 app.whenReady().then(() => {
+  installPythonDependencies();
   createWindow();
   createTray();
 

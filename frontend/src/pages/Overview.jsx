@@ -180,7 +180,29 @@ const Overview = () => {
   return (
     <div className="page-container" style={{ padding: '24px' }}>
       {/* Hero Section */}
-      <div style={{ textAlign: 'center', marginBottom: '3rem' }}>
+      <div style={{ textAlign: 'center', marginBottom: '3rem', position: 'relative', overflow: 'hidden', padding: '2rem 0' }}>
+        {/* Animated Background */}
+        <div style={{
+          position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+          zIndex: -1, opacity: 0.1, pointerEvents: 'none',
+          display: 'flex', alignItems: 'center', justifyContent: 'center'
+        }}>
+          <svg width="100%" height="100%" viewBox="0 0 1200 400" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M0,200 Q150,100 300,200 T600,200 T900,200 T1200,200" fill="none" stroke="var(--accent-gold)" strokeWidth="3">
+              <animate attributeName="d" dur="12s" repeatCount="indefinite"
+                values="M0,200 Q150,100 300,200 T600,200 T900,200 T1200,200;
+                        M0,200 Q150,300 300,200 T600,200 T900,200 T1200,200;
+                        M0,200 Q150,100 300,200 T600,200 T900,200 T1200,200" />
+            </path>
+            <path d="M0,250 Q150,350 300,250 T600,250 T900,250 T1200,250" fill="none" stroke="var(--info)" strokeWidth="2">
+              <animate attributeName="d" dur="18s" repeatCount="indefinite"
+                values="M0,250 Q150,350 300,250 T600,250 T900,250 T1200,250;
+                        M0,250 Q150,150 300,250 T600,250 T900,250 T1200,250;
+                        M0,250 Q150,350 300,250 T600,250 T900,250 T1200,250" />
+            </path>
+          </svg>
+        </div>
+
         <motion.h1 
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}

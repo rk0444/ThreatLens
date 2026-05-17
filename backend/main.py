@@ -1,4 +1,4 @@
-﻿from fastapi import (
+from fastapi import (
     FastAPI,
     Depends,
     HTTPException,
@@ -69,7 +69,6 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
-
 
 # Seed mock data logic
 def seed_data(db_session: Session):
@@ -215,6 +214,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.websocket("/ws/events")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection open
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 
 @app.get("/")

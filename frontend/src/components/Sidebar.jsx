@@ -28,9 +28,10 @@ const Sidebar = () => {
             key={item.path}
             to={item.path}
             className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}
+            title={!isExpanded ? item.name : undefined}
           >
             <item.icon size={24} className="nav-icon" />
-            {isExpanded && <span className="nav-text">{item.name}</span>}
+            <span className="nav-text">{item.name}</span>
           </NavLink>
         ))}
       </nav>

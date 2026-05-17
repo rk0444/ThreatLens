@@ -8,8 +8,39 @@
     "dev": "concurrently \"npm run frontend:dev\" \"npm run backend:dev\" \"wait-on http://localhost:5173 && electron .\"",
     "frontend:dev": "cd frontend && npm run dev",
     "backend:dev": "python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload",
-    "build": "cd frontend && npm run build && electron-builder",
-    "postinstall": "cd frontend && npm install"
+    "build": "cd frontend && npm run build && cd .. && electron-builder",
+    "postinstall": "cd frontend && npm install && cd .. && pip install -r backend/requirements.txt"
+  },
+  "build": {
+    "appId": "com.threatlens.v2",
+    "productName": "ThreatLens",
+    "directories": {
+      "output": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "frontend/dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "assets/icon.png"
+    }
   },
   "devDependencies": {
     "concurrently": "^8.2.2",

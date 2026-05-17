@@ -32,7 +32,7 @@ const TopBar = () => {
 
       <div className="topbar-right">
         <div className="ist-clock">{formatIST(time)}</div>
-        <button className="notification-btn">
+        <button className="notification-btn" title="Notifications">
           <Bell size={20} />
           <div className="notification-dot"></div>
         </button>
