@@ -9,9 +9,10 @@ const TopBar = () => {
     return () => clearInterval(timer);
   }, []);
 
-  const formatUTC = (date) => {
-    return date.toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
-  };
+  const formatIST = (date) => {
+  return date.toLocaleString("en-IN", { timeZone: "Asia/Kolkata", hour12: false })
+    .replace(",", "") + " IST";
+};
 
   return (
     <header className="topbar">
@@ -30,7 +31,7 @@ const TopBar = () => {
       </div>
 
       <div className="topbar-right">
-        <div className="utc-clock">{formatUTC(time)}</div>
+        <div className="ist-clock">{formatIST(time)}</div>
         <button className="notification-btn">
           <Bell size={20} />
           <div className="notification-dot"></div>

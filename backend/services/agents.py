@@ -1,4 +1,4 @@
-import os
+﻿import os
 import logging
 import json
 import time
@@ -45,7 +45,7 @@ class MultiAgentPipeline:
         
         self.openai_llm = ChatOpenAI(
             model=os.getenv("OPENAI_MODEL", "gpt-4o"),
-            api_key=os.getenv("OPENAI_API_KEY"),
+            api_key=os.getenv("GPT4O_API_KEY"),
             temperature=0.3
         )
         

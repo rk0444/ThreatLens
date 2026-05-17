@@ -1,4 +1,4 @@
-from fastapi import (
+﻿from fastapi import (
     FastAPI,
     Depends,
     HTTPException,
@@ -679,7 +679,7 @@ async def get_remediation_playbook(id: int, db: Session = Depends(db.get_db)):
     incident = db.query(models.Incident).filter(models.Incident.id == id).first()
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
-    # Phase 5: AI-generated playbook — placeholder with structured response
+    # Phase 5: AI-generated playbook â€” placeholder with structured response
     return {
         "incident_id": id,
         "type": incident.type,
@@ -1191,12 +1191,12 @@ async def get_top_threat_actors(db: Session = Depends(db.get_db)):
     return top_groups
 
 
-# ── AI ANALYST COPILOT ──────────────────────────────────────────────────────
+# â”€â”€ AI ANALYST COPILOT â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 @app.post("/api/copilot/ask")
 async def copilot_ask(request: Request, db: Session = Depends(db.get_db)):
     """
-    AI Analyst Copilot — natural language Q&A on CVEs, alerts, IOCs.
+    AI Analyst Copilot â€” natural language Q&A on CVEs, alerts, IOCs.
     Uses OpenAI GPT-4o with live context pulled from the DB.
     """
     import os
@@ -1288,7 +1288,7 @@ async def copilot_ask(request: Request, db: Session = Depends(db.get_db)):
         ).first()
         if alert:
             context_parts.append(
-                f"IOC MATCH — {ioc}:\n"
+                f"IOC MATCH â€” {ioc}:\n"
                 f"  Type: {alert.type} | Severity: {alert.severity}\n"
                 f"  Source: {alert.source}\n"
                 f"  Description: {alert.description or 'N/A'}"
@@ -1315,7 +1315,7 @@ You have access to live data from the platform including CVEs, incidents, OSINT 
 Your role:
 - Answer questions about specific CVEs, IOCs, threat actors, and incidents using the provided context
 - Assess exploitation likelihood and business impact clearly
-- Give concise, actionable answers — not walls of text
+- Give concise, actionable answers â€” not walls of text
 - Flag if a CVE is on the CISA KEV list, actively exploited, or linked to ransomware groups
 - Be direct: security teams need fast, clear answers
 
@@ -1334,7 +1334,7 @@ ANALYST QUESTION:
 {question}"""
 
     try:
-        client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        client = AsyncOpenAI(api_key=os.getenv("GPT4O_API_KEY"))
         response = await client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -1453,7 +1453,7 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
             actor_cve_map[name]["cve_ids"] = merged
             actor_cve_map[name]["cve_count"] = max(actor_cve_map[name]["cve_count"], len(ids))
  
-    # 4. Active incidents — MITRE tag matching
+    # 4. Active incidents â€” MITRE tag matching
     inc_rows = db.execute(text("""
         SELECT mitre_tags, severity FROM incidents
         WHERE status != 'Resolved' ORDER BY created_at DESC LIMIT 50
@@ -1471,7 +1471,7 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
             except Exception:
                 pass
  
-    # 5. Real OSINT alerts — parse country, sector, actor mentions
+    # 5. Real OSINT alerts â€” parse country, sector, actor mentions
     osint_rows = db.execute(text("""
         SELECT source, indicator, description, severity, created_at
         FROM osint_alerts ORDER BY created_at DESC LIMIT 200
@@ -1578,7 +1578,7 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
  
     return {
         "nodes":   nodes,
-        "ticker":  ticker_items[:20] or ["[WHITE] Monitoring all feeds — no active alerts"],
+        "ticker":  ticker_items[:20] or ["[WHITE] Monitoring all feeds â€” no active alerts"],
         "summary": {
             "active_countries": len(nodes),
             "tracked_actors":   sum(n["actor_count"] for n in nodes),
@@ -1588,3 +1588,183 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
             "active_incidents": active_incident_count,
         },
     }
+
+
+# â”€â”€ IOC HUNTER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+import re as _re
+
+def _detect_ioc_type(value: str) -> str:
+    """Classify a raw IOC string into: ip | hash | url | domain"""
+    v = value.strip()
+    # IP address
+    if _re.match(r'^\d{1,3}(\.\d{1,3}){3}$', v):
+        return "ip"
+    # File hash â€” MD5 (32), SHA1 (40), SHA256 (64)
+    if _re.match(r'^[a-fA-F0-9]{32}$', v) or \
+       _re.match(r'^[a-fA-F0-9]{40}$', v) or \
+       _re.match(r'^[a-fA-F0-9]{64}$', v):
+        return "hash"
+    # URL
+    if v.startswith("http://") or v.startswith("https://"):
+        return "url"
+    # Domain (fallback)
+    if _re.match(r'^([a-zA-Z0-9\-]+\.)+[a-zA-Z]{2,}$', v):
+        return "domain"
+    return "unknown"
+
+
+@app.post("/api/ioc/lookup")
+async def ioc_lookup(request: Request, db: Session = Depends(db.get_db)):
+    """
+    IOC Hunter â€” paste any IP, file hash, URL, or domain.
+    Fans out to AbuseIPDB, VirusTotal, and local OSINT DB in parallel.
+    Returns a unified threat report.
+    """
+    import asyncio
+    import os
+    from concurrent.futures import ThreadPoolExecutor
+    from backend.services.abuseipdb import check_ip_reputation
+    from backend.services.virustotal import check_file_hash, check_url_reputation
+
+    body = await request.json()
+    raw = (body.get("ioc") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="ioc field is required")
+
+    ioc_type = _detect_ioc_type(raw)
+    if ioc_type == "unknown":
+        raise HTTPException(status_code=422, detail=f"Could not classify IOC: '{raw}'")
+
+    results = {
+        "ioc":      raw,
+        "type":     ioc_type,
+        "sources":  {},
+        "verdict":  "Unknown",
+        "risk":     "none",   # none | low | medium | high | critical
+        "tags":     [],
+    }
+
+    # â”€â”€ 1. Local OSINT DB match â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    osint_match = db.query(models.OSINTAlert).filter(
+        models.OSINTAlert.indicator.ilike(f"%{raw}%")
+    ).first()
+    if osint_match:
+        results["sources"]["osint_db"] = {
+            "found":       True,
+            "source":      osint_match.source,
+            "severity":    osint_match.severity,
+            "description": osint_match.description,
+            "type":        osint_match.type,
+        }
+        results["tags"].append("In local OSINT DB")
+    else:
+        results["sources"]["osint_db"] = {"found": False}
+
+    # â”€â”€ 2. AbuseIPDB (IPs only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if ioc_type == "ip":
+        try:
+            abuse = check_ip_reputation(raw, db_session=db)
+            if abuse and "error" not in abuse:
+                results["sources"]["abuseipdb"] = {
+                    "score":        abuse.get("score", 0),
+                    "is_malicious": abuse.get("is_malicious", False),
+                    "country":      abuse.get("country"),
+                    "isp":          abuse.get("isp"),
+                    "usage_type":   abuse.get("usage_type"),
+                }
+                if abuse.get("is_malicious"):
+                    results["tags"].append(f"AbuseIPDB score {abuse['score']}/100")
+            elif abuse and "error" in abuse:
+                results["sources"]["abuseipdb"] = {"error": abuse["error"]}
+            else:
+                results["sources"]["abuseipdb"] = {"error": "No response"}
+        except Exception as e:
+            results["sources"]["abuseipdb"] = {"error": str(e)}
+
+    # â”€â”€ 3. VirusTotal (hash or URL) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if ioc_type == "hash":
+        try:
+            vt = check_file_hash(raw)
+            if vt and "error" not in vt:
+                results["sources"]["virustotal"] = vt
+                if vt.get("malicious", 0) > 0:
+                    results["tags"].append(f"VT {vt['malicious']} engines flagged")
+            elif vt:
+                results["sources"]["virustotal"] = vt
+            else:
+                results["sources"]["virustotal"] = {"error": "No response"}
+        except Exception as e:
+            results["sources"]["virustotal"] = {"error": str(e)}
+
+    elif ioc_type == "url":
+        try:
+            vt = check_url_reputation(raw)
+            if vt and "error" not in vt:
+                results["sources"]["virustotal"] = vt
+                if vt.get("malicious", 0) > 0:
+                    results["tags"].append(f"VT flagged as malicious")
+            elif vt:
+                results["sources"]["virustotal"] = vt
+            else:
+                results["sources"]["virustotal"] = {"error": "No response"}
+        except Exception as e:
+            results["sources"]["virustotal"] = {"error": str(e)}
+
+    elif ioc_type == "domain":
+        # Treat domain as a URL for VT lookup
+        try:
+            vt = check_url_reputation(f"http://{raw}")
+            if vt and "error" not in vt:
+                results["sources"]["virustotal"] = vt
+                if vt.get("malicious", 0) > 0:
+                    results["tags"].append("VT flagged domain")
+            elif vt:
+                results["sources"]["virustotal"] = vt
+            else:
+                results["sources"]["virustotal"] = {"error": "No response"}
+        except Exception as e:
+            results["sources"]["virustotal"] = {"error": str(e)}
+
+    # â”€â”€ 4. Compute unified verdict â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    is_malicious = (
+        results["sources"].get("abuseipdb", {}).get("is_malicious") or
+        results["sources"].get("virustotal", {}).get("verdict") == "Malicious" or
+        results["sources"].get("virustotal", {}).get("malicious", 0) > 0
+    )
+    osint_hit = results["sources"].get("osint_db", {}).get("found")
+    abuse_score = results["sources"].get("abuseipdb", {}).get("score", 0)
+
+    if is_malicious and (abuse_score or 0) >= 75:
+        results["verdict"] = "Malicious"
+        results["risk"]    = "critical"
+    elif is_malicious:
+        results["verdict"] = "Malicious"
+        results["risk"]    = "high"
+    elif osint_hit:
+        results["verdict"] = "Suspicious"
+        results["risk"]    = "medium"
+    elif abuse_score and abuse_score > 0:
+        results["verdict"] = "Suspicious"
+        results["risk"]    = "low"
+    else:
+        results["verdict"] = "Clean"
+        results["risk"]    = "none"
+
+    # â”€â”€ 5. Log as OSINT alert if malicious and not already stored â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    if is_malicious and not osint_hit:
+        try:
+            new_alert = models.OSINTAlert(
+                source="IOC Hunter",
+                indicator=raw,
+                type=ioc_type.upper(),
+                description=f"Manual IOC lookup flagged as malicious. Tags: {', '.join(results['tags'])}",
+                severity="High" if results["risk"] == "critical" else "Medium",
+            )
+            db.add(new_alert)
+            db.commit()
+            results["tags"].append("Logged to OSINT DB")
+        except Exception as e:
+            print(f"[IOC] Failed to log alert: {e}")
+
+    return results

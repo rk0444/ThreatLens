@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Globe, Shield, AlertTriangle, Settings, ChevronLeft, ChevronRight, Users, Bot, Map } from 'lucide-react';
+import { LayoutDashboard, Globe, Shield, AlertTriangle, Settings, ChevronLeft, ChevronRight, Users, Bot, Map, FileSearch } from 'lucide-react';
 
 const Sidebar = () => {
   const [isExpanded, setIsExpanded] = useState(true);
@@ -12,6 +12,7 @@ const Sidebar = () => {
     { name: 'Endpoints',      icon: Shield,           path: '/endpoints' },
     { name: 'Incidents',      icon: AlertTriangle,    path: '/incidents' },
     { name: 'AI Copilot',     icon: Bot,              path: '/copilot' },
+    { name: 'IOC Hunter', icon: FileSearch, path: '/ioc' },
     { name: 'Settings',       icon: Settings,         path: '/settings' },
   ];
   return (

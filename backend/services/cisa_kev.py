@@ -65,7 +65,7 @@ def sync_cisa_kev(db: Session):
             )
             cve.risk_score = risk["score"]
             cve.risk_band = risk["band"]
-            print(f"[KEV MATCH] {cve.cve_id} → Risk Score: {risk['score']} ({risk['band']})")
+            print(f"[KEV MATCH] {cve.cve_id} -> Risk Score: {risk['score']} ({risk['band']})")
 
     db.commit()
     print("[INIT] CISA KEV sync complete.")
