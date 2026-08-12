@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Plus, X, Monitor, AlertTriangle, Clock } from 'lucide-react';
+import { Plus, X, Monitor, AlertTriangle, Clock, Trash2 } from 'lucide-react';
 import CustomDropdown from '../components/CustomDropdown';
 
 const OS_BADGES = {
@@ -79,6 +79,20 @@ export default function Endpoints() {
     const res = await fetch('http://127.0.0.1:8000/api/assets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     if (res.ok) { setShowModal(false); setForm({ name: '', os: 'Windows 11 Pro', ip_address: '', software_list: '', status: 'Online' }); fetchAssets(); }
     setSubmitting(false);
+  };
+
+  const handleDelete = async (id) => {
+    if (confirm('Are you sure you want to remove this endpoint? This will also clear all incidents associated with it.')) {
+      try {
+        const res = await fetch(`http://127.0.0.1:8000/api/assets/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+          setSelected(null);
+          fetchAssets();
+        }
+      } catch (err) {
+        console.error("Failed to delete endpoint", err);
+      }
+    }
   };
 
   const osOptions = [
@@ -245,7 +259,19 @@ export default function Endpoints() {
                 <div className="label-small">{selected.ip_address}</div>
                 <h2>{selected.name}</h2>
               </div>
-              <button className="close-btn" onClick={()=>setSelected(null)}><X/></button>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button 
+                  className="close-btn" 
+                  onClick={() => handleDelete(selected.id)} 
+                  title="Remove Endpoint"
+                  style={{ color: 'var(--danger)' }}
+                >
+                  <Trash2 size={20} />
+                </button>
+                <button className="close-btn" onClick={() => setSelected(null)}>
+                  <X size={24} />
+                </button>
+              </div>
             </div>
             <div className="drawer-content">
               <div className="info-grid">

@@ -170,8 +170,8 @@ async def lifespan(app: FastAPI):
         sync_cisa_kev(db_session)
         print("[STARTUP] 3/4 CISA KEV sync complete.")
         
-        seed_data(db_session)
-        print("[STARTUP] 4/4 Seed data applied.")
+        # seed_data(db_session)
+        # print("[STARTUP] 4/4 Seed data applied.")
     finally:
         db_session.close()
     
@@ -578,6 +578,22 @@ async def register_asset(
     db.refresh(db_asset)
     await manager.broadcast(json.dumps({"type": "ASSET_ADDED", "data": {"name": db_asset.name, "id": db_asset.id}}))
     return db_asset
+
+
+@app.delete("/api/assets/{asset_id}")
+async def delete_asset(asset_id: int, db: Session = Depends(db.get_db)):
+    asset = db.query(models.Asset).filter(models.Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    
+    # Also delete associated incidents
+    db.query(models.Incident).filter(models.Incident.machine_id == asset_id).delete()
+    
+    db.delete(asset)
+    db.commit()
+    
+    await manager.broadcast(json.dumps({"type": "ASSET_DELETED", "data": {"id": asset_id}}))
+    return {"status": "success", "message": "Asset deleted"}
 
 
 @app.get("/api/assets/{asset_id}/incidents", response_model=List[schemas.IncidentResponse])
@@ -1245,15 +1261,15 @@ async def copilot_ask(request: Request, db: Session = Depends(db.get_db)):
     )
     if active_incidents:
         inc_lines = [
-            f"  - [{i.severity}] {i.type}: {(i.description or i.details or '')[:100]}"
+            f"  - [{i.severity}] {i.type}: {(i.details or '')[:100]}"
             for i in active_incidents
         ]
         context_parts.append("ACTIVE INCIDENTS:\n" + "\n".join(inc_lines))
 
     # OSINT alerts
     osint = (
-        db.query(models.OsintAlert)
-        .order_by(models.OsintAlert.created_at.desc())
+        db.query(models.OSINTAlert)
+        .order_by(models.OSINTAlert.created_at.desc())
         .limit(5)
         .all()
     )
@@ -1292,8 +1308,8 @@ async def copilot_ask(request: Request, db: Session = Depends(db.get_db)):
         question
     )
     for ioc in ioc_pattern[:3]:
-        alert = db.query(models.OsintAlert).filter(
-            models.OsintAlert.indicator == ioc
+        alert = db.query(models.OSINTAlert).filter(
+            models.OSINTAlert.indicator == ioc
         ).first()
         if alert:
             context_parts.append(
