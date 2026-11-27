@@ -1,10 +1,30 @@
 from datetime import datetime, timezone
 
 
+def rescore_cve(cve):
+    """Recompute and store risk_score/risk_band on a CVE model from its own fields."""
+    risk = calculate_risk_score(
+        cvss_score=cve.cvss_score or 0,
+        epss_score=cve.epss_score or 0,
+        epss_percentile=cve.epss_percentile,
+        cisa_kev=bool(cve.cisa_kev),
+        actively_exploited=bool(cve.actively_exploited),
+        asset_affected=bool(cve.asset_affected),
+        affected_asset_count=cve.affected_asset_count or 0,
+        ransomware_use=bool(cve.ransomware_use),
+        patch_available=cve.patch_available,
+        published_date=cve.published_date,
+    )
+    cve.risk_score = risk["score"]
+    cve.risk_band = risk["band"]
+    return risk
+
+
 def calculate_risk_score(
     cvss_score=0,
     epss_score=0,
     cisa_kev=False,
+    epss_percentile=None,
     actively_exploited=False,
     asset_affected=False,
     affected_asset_count=0,
@@ -15,7 +35,7 @@ def calculate_risk_score(
     """
     ThreatLens Risk Score v2 (0-100)
     Formula:
-      0.25 × CVSS + 0.20 × EPSS + 0.15 × KEV + 0.10 × Exploit
+      0.25 × CVSS + 0.20 × EPSS percentile + 0.15 × KEV + 0.10 × Exploit
     + 0.10 × Asset + 0.05 × Exposure + 0.05 × Threat
     + 0.05 × Patch + 0.05 × Temporal
     All components normalized to 0-100 before weighting.
@@ -24,8 +44,8 @@ def calculate_risk_score(
     # 1. CVSS Component (0-100 normalized) × 0.25
     cvss_component = ((cvss_score or 0) / 10.0) * 100 * 0.25
 
-    # 2. EPSS Component (0-1 → 0-100) × 0.20
-    epss_component = (epss_score or 0) * 100 * 0.20
+    # 2. EPSS Component × 0.20 — percentile, since raw EPSS is heavily skewed toward 0
+    epss_component = (epss_percentile if epss_percentile is not None else (epss_score or 0)) * 100 * 0.20
 
     # 3. KEV Component (binary) × 0.15
     kev_component = 100 * 0.15 if cisa_kev else 0
@@ -72,6 +92,10 @@ def calculate_risk_score(
         exploit_component + asset_component + exposure_component +
         threat_component + patch_component + temporal_component
     ))
+
+    # Confirmed exploitation floors (CISA KEV): KEV >= HIGH, KEV on your assets = CRITICAL
+    if cisa_kev:
+        total_score = max(total_score, 86.0 if asset_affected else 61.0)
 
     # Band classification
     if total_score >= 86:

@@ -5,7 +5,6 @@ from sqlalchemy.orm import Session
 from backend.database import models
 from backend.services.epss import fetch_epss_bulk
 from backend.services.asset_filter import cross_reference_cve_with_assets
-from backend.services.scoring import calculate_risk_score
 import os
 from dotenv import load_dotenv
 
@@ -89,29 +88,15 @@ def fetch_latest_cves(db_session: Session):
             epss_score = epss_data.get("epss")
             epss_percentile = epss_data.get("percentile")
 
-            risk = calculate_risk_score(
-                cvss_score=cvss_score or 0,
-                epss_score=epss_score or 0,
-                cisa_kev=False,
-                actively_exploited=actively_exploited,
-                asset_affected=False,
-                affected_asset_count=0,
-                ransomware_use=ransomware_use,
-                patch_available=patch_available,
-                published_date=published_date,
-            )
-
             existing = db_session.query(models.CVE).filter_by(cve_id=cve_id).first()
             if existing:
                 existing.cvss_score         = cvss_score
                 existing.epss_score         = epss_score
                 existing.epss_percentile    = epss_percentile
-                existing.risk_score         = risk["score"]
-                existing.risk_band          = risk["band"]
                 existing.raw_json           = cve_data
                 existing.patch_available    = patch_available
-                existing.actively_exploited = actively_exploited
-                existing.ransomware_use     = ransomware_use
+                existing.actively_exploited = actively_exploited or bool(existing.cisa_kev)  # KEV sync sets this; keyword guess must not clear it
+                existing.ransomware_use     = ransomware_use or bool(existing.cisa_kev and existing.ransomware_use)
                 db_session.commit()
                 cross_reference_cve_with_assets(db_session, existing)
                 db_session.commit()
@@ -127,8 +112,6 @@ def fetch_latest_cves(db_session: Session):
                     actively_exploited=actively_exploited,
                     ransomware_use=ransomware_use,
                     patch_available=patch_available,
-                    risk_score=risk["score"],
-                    risk_band=risk["band"],
                     raw_json=cve_data,
                 )
                 db_session.add(new_cve)

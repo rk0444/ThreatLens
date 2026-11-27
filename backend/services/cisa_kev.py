@@ -2,7 +2,7 @@ import requests
 from datetime import datetime
 from sqlalchemy.orm import Session
 from ..database import models
-from .scoring import calculate_risk_score
+from .scoring import rescore_cve
 
 CISA_KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
 
@@ -51,20 +51,7 @@ def sync_cisa_kev(db: Session):
             cve.actively_exploited = True
             cve.ransomware_use = kev.ransomware_use
 
-            # Recalculate risk score with updated flags
-            risk = calculate_risk_score(
-                cvss_score=cve.cvss_score or 0,
-                epss_score=cve.epss_score or 0,
-                cisa_kev=True,
-                actively_exploited=True,
-                asset_affected=cve.asset_affected or False,
-                affected_asset_count=getattr(cve, 'affected_asset_count', 0),
-                ransomware_use=kev.ransomware_use,
-                patch_available=getattr(cve, 'patch_available', None),
-                published_date=cve.published_date,
-            )
-            cve.risk_score = risk["score"]
-            cve.risk_band = risk["band"]
+            risk = rescore_cve(cve)
             print(f"[KEV MATCH] {cve.cve_id} -> Risk Score: {risk['score']} ({risk['band']})")
 
     db.commit()

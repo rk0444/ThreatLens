@@ -91,6 +91,8 @@ class MorningBriefService:
                 risk_score = calculate_risk_score(
                     cvss_score=cve.cvss_score,
                     epss_score=cve.epss_score,
+                    epss_percentile=cve.epss_percentile,
+                    cisa_kev=cve.cisa_kev,
                     actively_exploited=cve.actively_exploited,
                     asset_affected=cve.asset_affected,
                     published_date=cve.published_date
@@ -150,6 +152,8 @@ TOP 10 CVEs BY RISK SCORE (Last 24 Hours):
             risk_score = calculate_risk_score(
                 cvss_score=cve.cvss_score,
                 epss_score=cve.epss_score,
+                epss_percentile=cve.epss_percentile,
+                cisa_kev=cve.cisa_kev,
                 actively_exploited=cve.actively_exploited,
                 asset_affected=cve.asset_affected,
                 published_date=cve.published_date
@@ -227,6 +231,8 @@ Begin your brief with "MORNING SECURITY BRIEF - [Date]" and end with "Priority A
             risk_score = calculate_risk_score(
                 cvss_score=cve.cvss_score,
                 epss_score=cve.epss_score,
+                epss_percentile=cve.epss_percentile,
+                cisa_kev=cve.cisa_kev,
                 actively_exploited=cve.actively_exploited,
                 asset_affected=cve.asset_affected,
                 published_date=cve.published_date

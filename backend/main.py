@@ -27,6 +27,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from backend.database import db, models, schemas
 from backend.services.nvd import fetch_latest_cves
+from backend.services.asset_filter import rematch_all_cves
 from backend.services.osint import fetch_osint_alerts
 from backend.services.abuseipdb import check_ip_reputation
 # from services.agents import get_pipeline
@@ -268,18 +269,25 @@ async def get_overview(db: Session = Depends(db.get_db)):
             for t in ["Critical", "High", "Medium", "Low"]
         ]
         
-        # Get top 5 critical threats
+        # Get top 5 critical threats — use real risk_score from scoring engine
         top_threats = db.query(models.CVE).filter(
             models.CVE.cvss_score >= 7.0
-        ).order_by(models.CVE.cvss_score.desc()).limit(5).all()
+        ).order_by(
+            models.CVE.risk_score.desc().nullslast(),
+            models.CVE.cvss_score.desc()
+        ).limit(5).all()
         
         top_threats_data = []
         for threat in top_threats:
+            desc = threat.description or ''
             top_threats_data.append({
                 'id': threat.id,
                 'cve_id': threat.cve_id,
-                'description': threat.description[:100] + '...' if len(threat.description) > 100 else threat.description,
-                'risk_score': (threat.cvss_score or 0) * 10
+                'description': desc[:100] + '...' if len(desc) > 100 else desc,
+                'risk_score': round(threat.risk_score or (threat.cvss_score or 0) * 10, 1),
+                'cvss_score': threat.cvss_score,
+                'epss_score': threat.epss_score,
+                'cisa_kev': bool(threat.cisa_kev),
             })
         
         # Get activity log (simplified)
@@ -343,7 +351,7 @@ async def get_health(db: Session = Depends(db.get_db)):
     import os
     vt_key = os.getenv("VIRUSTOTAL_API_KEY", "")
     abuse_key = os.getenv("ABUSEIPDB_API_KEY", "")
-    groq_key = os.getenv("GROQ_API_KEY", "")
+    ai_key = os.getenv("GPT4O_API_KEY", "")
 
     # Status logic with thresholds
     nvd_status = "Live" if nvd_mins < 20 else ("Delayed" if nvd_mins < 60 else "Down")
@@ -354,7 +362,7 @@ async def get_health(db: Session = Depends(db.get_db)):
         "otx":      {"status": otx_status, "detail": f"{int(otx_mins)}m ago"},
         "abuseipdb":{"status": "Active" if abuse_key        else "Down",   "detail": "API key present" if abuse_key else "No key"},
         "virustotal":{"status":"Active" if vt_key           else "Down",   "detail": "API key present" if vt_key else "No key"},
-        "ai":       {"status": "Ready"  if groq_key         else "Down",   "detail": "Groq connected" if groq_key else "No API key"},
+        "ai":       {"status": "Ready"  if ai_key           else "Down",   "detail": "GPT-4o key present" if ai_key else "No API key"},
         "agent":    {"status": "Online" if agent_secs < 60  else "Offline","detail": f"{int(agent_secs)}s ago"},
     }
 
@@ -454,6 +462,7 @@ async def get_cves(
     severity: Optional[float] = None,
     epss_min: Optional[float] = None,
     sort: Optional[str] = None,
+    band: Optional[str] = None,
     affected_only: bool = False,
     db: Session = Depends(db.get_db),
 ):
@@ -464,9 +473,17 @@ async def get_cves(
         query = query.filter(models.CVE.cvss_score >= severity)
     if epss_min:
         query = query.filter(models.CVE.epss_score >= epss_min)
-    
-    if sort == "risk_score":
-        query = query.order_by(models.CVE.cvss_score.desc())
+    if band:
+        query = query.filter(models.CVE.risk_band == band.upper())
+
+    sort_columns = {
+        "risk_score": models.CVE.risk_score,
+        "epss": models.CVE.epss_score,
+        "cvss": models.CVE.cvss_score,
+        "published": models.CVE.published_date,
+    }
+    if sort in sort_columns:
+        query = query.order_by(sort_columns[sort].desc().nullslast())
     else:
         query = query.order_by(models.CVE.created_at.desc())
         
@@ -576,6 +593,7 @@ async def register_asset(
     db.add(db_asset)
     db.commit()
     db.refresh(db_asset)
+    rematch_all_cves(db)
     await manager.broadcast(json.dumps({"type": "ASSET_ADDED", "data": {"name": db_asset.name, "id": db_asset.id}}))
     return db_asset
 
@@ -591,7 +609,8 @@ async def delete_asset(asset_id: int, db: Session = Depends(db.get_db)):
     
     db.delete(asset)
     db.commit()
-    
+    rematch_all_cves(db)
+
     await manager.broadcast(json.dumps({"type": "ASSET_DELETED", "data": {"id": asset_id}}))
     return {"status": "success", "message": "Asset deleted"}
 
@@ -697,28 +716,6 @@ async def respond_to_incident(
         )
     )
     return {"status": "success", "incident_status": incident.status}
-
-
-@app.get("/api/incidents/{id}/playbook")
-async def get_remediation_playbook(id: int, db: Session = Depends(db.get_db)):
-    incident = db.query(models.Incident).filter(models.Incident.id == id).first()
-    if not incident:
-        raise HTTPException(status_code=404, detail="Incident not found")
-    # Phase 5: AI-generated playbook â€” placeholder with structured response
-    return {
-        "incident_id": id,
-        "type": incident.type,
-        "severity": incident.severity,
-        "playbook": [
-            {"step": 1, "action": "Isolate the affected endpoint from the network", "priority": "Immediate"},
-            {"step": 2, "action": "Capture memory dump and preserve forensic evidence", "priority": "High"},
-            {"step": 3, "action": f"Terminate process: {incident.process_name or 'Unknown'}", "priority": "High"},
-            {"step": 4, "action": "Run full AV scan on the affected machine", "priority": "Medium"},
-            {"step": 5, "action": "Review logs for lateral movement indicators", "priority": "Medium"},
-            {"step": 6, "action": "Patch underlying vulnerability and restore from clean backup", "priority": "Standard"},
-        ],
-        "note": "Full AI-generated playbook coming in Phase 5."
-    }
 
 
 @app.get("/api/morning-brief", response_model=schemas.MorningBriefResponse)
@@ -909,15 +906,6 @@ async def ingest_mitre():
 @app.get("/api/scheduler/logs")
 async def get_scheduler_logs(db: Session = Depends(db.get_db)):
     return db.query(models.SchedulerLog).order_by(models.SchedulerLog.ran_at.desc()).limit(20).all()
-
-@app.websocket("/ws/events")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
-    try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        manager.disconnect(websocket)
 
 # @app.get("/api/overview")
 # async def get_overview(db: Session = Depends(db.get_db)):
@@ -1382,36 +1370,65 @@ ANALYST QUESTION:
 
 
 COUNTRY_COORDS = {
-    "China":       {"lat": 35.86,  "lng": 104.19},
-    "Russia":      {"lat": 55.75,  "lng": 37.61},
-    "Iran":        {"lat": 35.68,  "lng": 51.38},
-    "North Korea": {"lat": 39.02,  "lng": 125.75},
-    "USA":         {"lat": 37.09,  "lng": -95.71},
-    "UK":          {"lat": 51.50,  "lng": -0.12},
-    "Israel":      {"lat": 31.77,  "lng": 35.21},
-    "Germany":     {"lat": 51.16,  "lng": 10.45},
-    "Ukraine":     {"lat": 48.37,  "lng": 31.16},
-    "Vietnam":     {"lat": 14.05,  "lng": 108.27},
-    "Pakistan":    {"lat": 30.37,  "lng": 69.34},
-    "India":       {"lat": 20.59,  "lng": 78.96},
-    "Brazil":      {"lat": -14.23, "lng": -51.92},
+    "China":        {"lat": 35.86,   "lng": 104.19},
+    "Russia":       {"lat": 55.75,   "lng": 37.61},
+    "Iran":         {"lat": 35.68,   "lng": 51.38},
+    "North Korea":  {"lat": 39.02,   "lng": 125.75},
+    "USA":          {"lat": 37.09,   "lng": -95.71},
+    "UK":           {"lat": 51.50,   "lng": -0.12},
+    "Israel":       {"lat": 31.77,   "lng": 35.21},
+    "Germany":      {"lat": 51.16,   "lng": 10.45},
+    "Ukraine":      {"lat": 48.37,   "lng": 31.16},
+    "Vietnam":      {"lat": 14.05,   "lng": 108.27},
+    "Pakistan":     {"lat": 30.37,   "lng": 69.34},
+    "India":        {"lat": 20.59,   "lng": 78.96},
+    "Brazil":       {"lat": -14.23,  "lng": -51.92},
+    "Turkey":       {"lat": 38.96,   "lng": 35.24},
+    "Belarus":      {"lat": 53.71,   "lng": 27.95},
+    "Lebanon":      {"lat": 33.85,   "lng": 35.86},
+    "Syria":        {"lat": 34.80,   "lng": 38.99},
+    "Nigeria":      {"lat": 9.08,    "lng": 8.67},
+    "South Korea":  {"lat": 35.90,   "lng": 127.76},
+    "France":       {"lat": 46.22,   "lng": 2.21},
+    "Indonesia":    {"lat": -0.78,   "lng": 113.92},
+    "Bangladesh":   {"lat": 23.68,   "lng": 90.35},
+    "Egypt":        {"lat": 26.82,   "lng": 30.80},
+    "Saudi Arabia": {"lat": 23.88,   "lng": 45.08},
 }
  
 OSINT_COUNTRY_HINTS = {
-    "china": "China", "chinese": "China", "prc": "China",
-    "taiwan": "China", "beijing": "China", "volt typhoon": "China",
-    "salt typhoon": "China", "apt41": "China", "hafnium": "China",
-    "apt1": "China", "apt10": "China", "apt19": "China",
-    "russia": "Russia", "russian": "Russia", "sandworm": "Russia",
-    "apt28": "Russia", "apt29": "Russia", "cozy bear": "Russia",
-    "fancy bear": "Russia", "turla": "Russia", "wizard spider": "Russia",
-    "indrik spider": "Russia", "conti": "Russia",
-    "iran": "Iran", "iranian": "Iran", "oilrig": "Iran",
-    "apt33": "Iran", "apt34": "Iran", "muddywater": "Iran",
-    "magic hound": "Iran", "fox kitten": "Iran",
-    "north korea": "North Korea", "dprk": "North Korea",
-    "lazarus": "North Korea", "kimsuky": "North Korea", "apt38": "North Korea",
-    "israel": "Israel", "vietnam": "Vietnam", "pakistan": "Pakistan",
+    # China
+    "china": "China", "chinese": "China", "prc": "China", "taiwan": "China",
+    "beijing": "China", "volt typhoon": "China", "salt typhoon": "China",
+    "apt41": "China", "hafnium": "China", "apt1": "China", "apt10": "China", "apt19": "China",
+    # Russia
+    "russia": "Russia", "russian": "Russia", "sandworm": "Russia", "apt28": "Russia",
+    "apt29": "Russia", "cozy bear": "Russia", "fancy bear": "Russia", "turla": "Russia",
+    "wizard spider": "Russia", "indrik spider": "Russia", "conti": "Russia", "kremlin": "Russia",
+    # Iran
+    "iran": "Iran", "iranian": "Iran", "oilrig": "Iran", "apt33": "Iran", "apt34": "Iran",
+    "muddywater": "Iran", "magic hound": "Iran", "fox kitten": "Iran", "charming kitten": "Iran",
+    # North Korea
+    "north korea": "North Korea", "dprk": "North Korea", "lazarus": "North Korea",
+    "kimsuky": "North Korea", "apt38": "North Korea", "bluenoroff": "North Korea",
+    # India
+    "india": "India", "indian": "India", "sidewinder": "India", "patchwork": "India", "donot": "India",
+    # Pakistan
+    "pakistan": "Pakistan", "pakistani": "Pakistan", "transparent tribe": "Pakistan", "apt36": "Pakistan",
+    # Vietnam
+    "vietnam": "Vietnam", "vietnamese": "Vietnam", "apt32": "Vietnam", "oceanlotus": "Vietnam",
+    # Israel
+    "israel": "Israel", "israeli": "Israel",
+    # Turkey
+    "turkey": "Turkey", "turkish": "Turkey", "sea turtle": "Turkey", "marbled dust": "Turkey",
+    # Ukraine
+    "ukraine": "Ukraine", "ukrainian": "Ukraine",
+    # Belarus
+    "belarus": "Belarus", "belarusian": "Belarus", "ghostwriter": "Belarus",
+    # Lebanon / Syria / Nigeria
+    "lebanon": "Lebanon", "hezbollah": "Lebanon", "dark caracal": "Lebanon",
+    "syria": "Syria", "syrian": "Syria",
+    "nigeria": "Nigeria", "nigerian": "Nigeria",
 }
  
 SECTOR_KEYWORDS = {

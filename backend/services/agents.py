@@ -6,7 +6,6 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from langchain_core.messages import HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
-from langchain_groq import ChatGroq
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from typing_extensions import Annotated, TypedDict
@@ -37,12 +36,6 @@ class MultiAgentPipeline:
     
     def __init__(self):
         # Initialize LLMs
-        self.groq_llm = ChatGroq(
-            model=os.getenv("GROQ_MODEL", "llama-3-70b-8192"),
-            api_key=os.getenv("GROQ_API_KEY"),
-            temperature=0.1
-        )
-        
         self.openai_llm = ChatOpenAI(
             model=os.getenv("OPENAI_MODEL", "gpt-4o"),
             api_key=os.getenv("GPT4O_API_KEY"),
@@ -124,7 +117,7 @@ class MultiAgentPipeline:
         try:
             logger.info(f"Hunter agent processing {state['threat_type'].value}")
             
-            # Use Groq for fast processing
+            # Extract and normalize
             if state["threat_type"] == ThreatType.CVE:
                 threat_schema = await self._process_cve(state["raw_data"])
             elif state["threat_type"] == ThreatType.INCIDENT:
@@ -388,7 +381,7 @@ Focus on:
 Return a JSON object with the extracted information.
 """
         
-        response = await self.groq_llm.ainvoke([HumanMessage(content=prompt)])
+        response = await self.openai_llm.ainvoke([HumanMessage(content=prompt)])
         
         # Parse the response and create ThreatSchema
         try:

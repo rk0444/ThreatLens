@@ -388,18 +388,21 @@ const Overview = () => {
                   e.currentTarget.style.background = index === 0 ? 'rgba(229, 62, 62, 0.1)' : 'rgba(255,255,255,0.02)';
                 }}
                 onClick={() => {
-                  // Navigate to CVE detail
                   window.location.href = `/global-threats#cve-${threat.cve_id}`;
                 }}
               >
-                <div style={{ flex: 1 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ 
                     fontFamily: 'JetBrains Mono', 
                     color: 'var(--accent-gold)', 
                     fontSize: '0.85rem',
-                    marginBottom: '0.25rem'
+                    marginBottom: '0.25rem',
+                    display: 'flex', alignItems: 'center', gap: '6px'
                   }}>
                     {threat.cve_id}
+                    {threat.cisa_kev && (
+                      <span style={{ fontSize: '0.6rem', background: 'rgba(229,62,62,0.2)', border: '1px solid #fc8181', color: '#fc8181', padding: '1px 5px', borderRadius: '3px', fontFamily: 'sans-serif', flexShrink: 0 }}>KEV</span>
+                    )}
                   </div>
                   <div style={{ 
                     color: 'var(--text-secondary)', 
@@ -410,11 +413,19 @@ const Overview = () => {
                   }}>
                     {threat.description}
                   </div>
+                  <div style={{ display: 'flex', gap: '12px', marginTop: '4px', fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                    {threat.cvss_score != null && <span>CVSS {Number(threat.cvss_score).toFixed(1)}</span>}
+                    {threat.epss_score != null && <span>EPSS {(Number(threat.epss_score) * 100).toFixed(1)}%</span>}
+                  </div>
                 </div>
                 <div style={{
-                  fontSize: '0.85rem',
-                  fontWeight: 600,
-                  color: threat.risk_score >= 86 ? '#fc8181' : 'var(--text-primary)'
+                  fontSize: '0.9rem',
+                  fontWeight: 700,
+                  color: threat.risk_score >= 86 ? '#fc8181' : threat.risk_score >= 61 ? '#f6ad55' : 'var(--warning)',
+                  marginLeft: '12px',
+                  minWidth: '40px',
+                  textAlign: 'right',
+                  flexShrink: 0
                 }}>
                   {threat.risk_score}
                 </div>

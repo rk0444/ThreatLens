@@ -17,6 +17,14 @@ class CVEResponse(CVEBase):
     id: int
     created_at: datetime
     actively_exploited: Optional[bool] = False
+    # Risk formula inputs (frontend/src/utils/riskScore.js reads these)
+    cisa_kev: Optional[bool] = False
+    asset_affected: Optional[bool] = False
+    affected_asset_count: Optional[int] = 0
+    ransomware_use: Optional[bool] = False
+    patch_available: Optional[bool] = None
+    risk_score: Optional[float] = None
+    risk_band: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
 
 

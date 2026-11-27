@@ -22,16 +22,19 @@ def fetch_epss_score(cve_id: str):
 
 def fetch_epss_bulk(cve_ids: list) -> dict:
     """
-    Fetch EPSS scores for up to 2000 CVE IDs in a single request.
+    Fetch EPSS scores for any number of CVE IDs, 100 per request
+    (the API answers 414 URI Too Long for a few hundred IDs).
     Returns: {cve_id: {"epss": float, "percentile": float}, ...}
     """
     result = {}
-    if not cve_ids:
-        return result
-    try:
-        params = {"cve": ",".join(cve_ids), "limit": 2000}
-        response = requests.get(EPSS_API_URL, params=params, timeout=30)
-        if response.status_code == 200:
+    for i in range(0, len(cve_ids), 100):
+        chunk = cve_ids[i:i + 100]
+        try:
+            params = {"cve": ",".join(chunk), "limit": len(chunk)}
+            response = requests.get(EPSS_API_URL, params=params, timeout=30)
+            if response.status_code != 200:
+                print(f"[epss] Bulk fetch returned {response.status_code}")
+                continue
             for item in response.json().get("data", []):
                 cve_id = item.get("cve")
                 if cve_id:
@@ -39,6 +42,6 @@ def fetch_epss_bulk(cve_ids: list) -> dict:
                         "epss": float(item.get("epss", 0)),
                         "percentile": float(item.get("percentile", 0))
                     }
-    except Exception as e:
-        print(f"[epss] Bulk fetch error: {e}")
+        except Exception as e:
+            print(f"[epss] Bulk fetch error: {e}")
     return result

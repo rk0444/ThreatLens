@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "concurrently \"npm run frontend:dev\" \"npm run backend:dev\" \"wait-on http://localhost:5173 && electron .\"",
     "frontend:dev": "cd frontend && npm run dev",
-    "backend:dev": "python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload --reload-dir backend --reload-exclude \"*.sqlite\" --reload-exclude \"*.sqlite-wal\" --reload-exclude \"*.sqlite-shm\"",
+    "backend:dev": ".venv\\Scripts\\python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload --reload-dir backend --reload-exclude \"*.sqlite\" --reload-exclude \"*.sqlite-wal\" --reload-exclude \"*.sqlite-shm\"",
     "build": "cd frontend && npm run build && cd .. && electron-builder",
     "postinstall": "cd frontend && npm install && cd .. && pip install -r backend/requirements.txt"
   },

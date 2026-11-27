@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import ThreatGraph from '../components/ThreatGraph';
 import CveDrawer from '../components/CveDrawer';
 import CustomDropdown from '../components/CustomDropdown';
+import { getRiskScore, getRiskColor } from '../utils/riskScore';
 
 const GlobalThreats = () => {
   const [cves, setCves] = useState([]);
@@ -53,9 +54,12 @@ const GlobalThreats = () => {
 
   const fetchCves = () => {
     setLoading(true);
-    const params = new URLSearchParams();
+    // The server picks which CVEs to send (top 50 by this sort/filter); the client only orders them.
+    const sortParam = { 'Severity': 'risk_score', 'Risk Score': 'risk_score', 'EPSS %': 'epss', 'Published Date': 'published', 'CVSS Score': 'cvss' };
+    const params = new URLSearchParams({ sort: sortParam[filters.sortBy] });
     if (filters.myAssetsOnly) params.append('affected_only', 'true');
-    if (filters.severity !== 'All Severities') params.append('severity', filters.severity === 'Critical' ? '9' : '7');
+    if (filters.severity !== 'All Severities') params.append('band', filters.severity);
+    if (filters.epssMin > 0) params.append('epss_min', filters.epssMin);
 
     fetch(`http://127.0.0.1:8000/api/cves?${params.toString()}`)
       .then(res => res.json())
@@ -87,7 +91,7 @@ const GlobalThreats = () => {
       }
     };
     return () => socket.close();
-  }, [filters.myAssetsOnly, filters.severity]);
+  }, [filters.myAssetsOnly, filters.severity, filters.sortBy, filters.epssMin]);
 
   useEffect(() => {
     if (selectedCve) {
@@ -100,68 +104,9 @@ const GlobalThreats = () => {
     }
   }, [selectedCve]);
 
-  const getRiskColor = (score) => {
-  if (score >= 86) return 'var(--danger)';   // CRITICAL
-  if (score >= 61) return 'var(--warning)';  // HIGH
-  if (score >= 31) return 'var(--accent-gold)'; // MEDIUM
-  return 'var(--success)';                   // LOW
-};
-
-  const getRiskScore = (cve, asset = null) => {
-  // 0.25 × CVSS (0–10 normalized to 0–100)
-  const cvssComponent = ((cve.cvss_score || 0) / 10) * 100 * 0.25;
-
-  // 0.20 × EPSS (already 0–1, normalize to 0–100)
-  const epssComponent = (cve.epss_score || 0) * 100 * 0.20;
-
-  // 0.15 × KEV (binary: on CISA KEV list or not)
-  const kevComponent = cve.cisa_kev ? 100 * 0.15 : 0;
-
-  // 0.10 × Exploit (public exploit available)
-  const exploitComponent = cve.actively_exploited ? 100 * 0.10 : 0;
-
-  // 0.10 × Asset (does it affect your inventory)
-  const assetComponent = cve.asset_affected ? 100 * 0.10 : 0;
-
-  // 0.05 × Exposure (how many assets affected)
-  const exposureComponent = (() => {
-    const count = cve.affected_asset_count || 0;
-    if (!cve.asset_affected) return 0;
-    if (count >= 10) return 100 * 0.05;
-    if (count >= 5)  return 75  * 0.05;
-    if (count >= 2)  return 50  * 0.05;
-    return            25  * 0.05;
-  })();
-
-  // 0.05 × Threat (ransomware or APT association)
-  const threatComponent = cve.ransomware_use ? 100 * 0.05 : 0;
-
-  // 0.05 × Patch (no patch available = higher risk)
-  const patchComponent = cve.patch_available === false ? 100 * 0.05 : 0;
-
-  // 0.05 × Temporal (recency — published within last 30 days)
-  const temporalComponent = (() => {
-    const days = (Date.now() - new Date(cve.published_date || 0).getTime()) 
-                 / (1000 * 60 * 60 * 24);
-    if (days <= 7)  return 100 * 0.05;
-    if (days <= 30) return 60  * 0.05;
-    if (days <= 90) return 30  * 0.05;
-    return 0;
-  })();
-
-  return Math.min(100, Math.round(
-    cvssComponent + epssComponent + kevComponent + exploitComponent +
-    assetComponent + exposureComponent + threatComponent + 
-    patchComponent + temporalComponent
-  ));
-};
 
   const filteredCves = cves.filter(cve => {
-    if (filters.severity !== 'All Severities') {
-      const score = getRiskScore(cve);
-      const tier = getSeverityTier(score).label;
-      if (tier !== filters.severity.toUpperCase()) return false;
-    }
+    // Severity band is filtered server-side (stored risk_band)
     if (cve.epss_score < filters.epssMin) return false;
     if (filters.myAssetsOnly && !cve.asset_affected) return false;
     return true;
