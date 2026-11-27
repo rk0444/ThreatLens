@@ -137,6 +137,7 @@ async def lifespan(app: FastAPI):
     }
     with db.engine.begin() as conn:
         _relax_flagged_abuse_score(conn)
+        conn.execute(text("DROP TABLE IF EXISTS cve_to_groups"))  # no source links CVEs to groups; the model is gone
         for table, columns in added_columns.items():
             have = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
             for col, col_type in columns:
@@ -1016,21 +1017,6 @@ async def get_incident_playbook(incident_id: int, db: Session = Depends(db.get_d
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
-@app.get("/api/cves/{cve_id}/threat-actors")
-async def get_cve_threat_actors(cve_id: str, db: Session = Depends(db.get_db)):
-    links = db.query(models.CveToGroup).filter(models.CveToGroup.cve_id == cve_id).all()
-    groups = []
-    for link in links:
-        group = db.query(models.MitreGroup).filter(models.MitreGroup.mitre_id == link.group_mitre_id).first()
-        if group:
-            groups.append({
-                "group": group,
-                "confidence": link.confidence,
-                "technique_id": link.technique_id,
-                "technique_name": link.technique_name
-            })
-    return groups
-
 @app.get("/api/threat-actors")
 async def get_all_threat_actors(db: Session = Depends(db.get_db)):
     groups = db.query(models.MitreGroup).all()
@@ -1044,8 +1030,6 @@ async def get_all_threat_actors(db: Session = Depends(db.get_db)):
             "description": group.description,
             "country": group.country,
             "motivation": group.motivation,
-            "first_seen": group.first_seen,
-            "last_seen": group.last_seen,
             "techniques": group.techniques,
         })
     return result
@@ -1055,8 +1039,12 @@ async def get_threat_actor_detail(group_id: int, db: Session = Depends(db.get_db
     group = db.query(models.MitreGroup).filter(models.MitreGroup.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
-    links = db.query(models.CveToGroup).filter(models.CveToGroup.group_mitre_id == group.mitre_id).all()
-    return {"group": group, "linked_cves": links}
+    techniques = [
+        {"technique_id": t.technique_id, "name": t.name, "tactic": t.tactic}
+        for t in db.query(models.MitreTechnique).order_by(models.MitreTechnique.technique_id).all()
+        if group.mitre_id in (t.associated_groups or [])
+    ]
+    return {"group": group, "techniques": techniques}
 
 
 
@@ -1120,17 +1108,12 @@ async def copilot_ask(request: Request, db: Session = Depends(db.get_db)):
     for cve_id in cve_mentions[:3]:
         cve = db.query(models.CVE).filter(models.CVE.cve_id == cve_id).first()
         if cve:
-            actors = db.query(models.CveToGroup).filter(
-                models.CveToGroup.cve_id == cve_id
-            ).all()
-            actor_str = ", ".join(a.group_name for a in actors) if actors else "None linked"
             context_parts.append(
                 f"DETAIL FOR {cve_id}:\n"
                 f"  Description: {cve.description or 'N/A'}\n"
                 f"  CVSS: {cve.cvss_score} | EPSS: {round((cve.epss_score or 0)*100,1)}%\n"
                 f"  KEV: {bool(cve.cisa_kev)} | Ransomware: {bool(cve.ransomware_use)}\n"
                 f"  Actively Exploited: {bool(cve.actively_exploited)}\n"
-                f"  Threat Actors: {actor_str}\n"
                 f"  AI Summary: {cve.ai_summary or 'Not yet generated'}"
             )
 

@@ -130,17 +130,6 @@ class MitreTechnique(Base):
     platforms: Mapped[Optional[List[str]]] = mapped_column(JSON)
     associated_groups: Mapped[Optional[List[str]]] = mapped_column(JSON)
 
-class CveToGroup(Base):
-    __tablename__ = "cve_to_groups"
-    id: Mapped[int] = mapped_column(primary_key=True, index=True)
-    cve_id: Mapped[str] = mapped_column(String, index=True)
-    group_name: Mapped[str] = mapped_column(String)
-    group_mitre_id: Mapped[str] = mapped_column(String)
-    technique_id: Mapped[Optional[str]] = mapped_column(String)
-    technique_name: Mapped[Optional[str]] = mapped_column(String)
-    confidence: Mapped[str] = mapped_column(String)
-    source: Mapped[str] = mapped_column(String)
-
 class CisaKev(Base):
     __tablename__ = "cisa_kev"
     id: Mapped[int] = mapped_column(primary_key=True, index=True)

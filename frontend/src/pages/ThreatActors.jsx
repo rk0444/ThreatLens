@@ -1,16 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
-import { Search, Filter, ShieldAlert, ChevronRight, X, Flag, Shield, Tag, Target } from 'lucide-react';
-import CustomDropdown from '../components/CustomDropdown';
+import { Search, ShieldAlert, ChevronRight, X, Shield, Tag } from 'lucide-react';
 
-// Helper to highlight search text
+// Helper to highlight search text (escaped, so "(" or "+" in the search can't break the RegExp)
 const Highlight = ({ text, highlight }) => {
   if (!highlight.trim()) return <span>{text}</span>;
-  const regex = new RegExp(`(${highlight})`, 'gi');
-  const parts = text.split(regex);
+  const escaped = highlight.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
   return (
     <span>
-      {parts.map((part, i) => 
-        regex.test(part) ? (
+      {parts.map((part, i) =>
+        part.toLowerCase() === highlight.toLowerCase() ? (
           <mark key={i} style={{ background: 'rgba(184, 146, 42, 0.2)', color: '#B8922A', borderRadius: '2px', padding: '0 2px' }}>
             {part}
           </mark>
@@ -22,94 +21,60 @@ const Highlight = ({ text, highlight }) => {
   );
 };
 
-// ----- FIX 1 & 2: Full country mapping (code → flag + name) -----
-const COUNTRY_MAP = {
-  Russia:          { flag: '🇷🇺', name: 'Russia' },
-  China:           { flag: '🇨🇳', name: 'China' },
-  'United States': { flag: '🇺🇸', name: 'United States' },
-  'North Korea':   { flag: '🇰🇵', name: 'North Korea' },
-  Iran:            { flag: '🇮🇷', name: 'Iran' },
-  Belarus:         { flag: '🇧🇾', name: 'Belarus' },
-  Ukraine:         { flag: '🇺🇦', name: 'Ukraine' },
-  Vietnam:         { flag: '🇻🇳', name: 'Vietnam' },
-  India:           { flag: '🇮🇳', name: 'India' },
-  Pakistan:        { flag: '🇵🇰', name: 'Pakistan' },
-  Brazil:          { flag: '🇧🇷', name: 'Brazil' },
-  Nigeria:         { flag: '🇳🇬', name: 'Nigeria' },
-};
-
-const getCountryInfo = (country) => {
-  return COUNTRY_MAP[country] || { flag: '🌐', name: 'Unknown Origin' };
-};
-
-// ----- FIX 5: Motivation badge colours -----
-const MOTIVATION_STYLE = {
-  Financial:   { bg: 'rgba(184, 146, 42, 0.15)', border: 'rgba(184,146,42,0.4)', text: '#e0b84a' },
-  Espionage:   { bg: 'rgba(26, 58, 92, 0.6)',    border: 'rgba(66,153,225,0.4)', text: '#90cdf4' },
-  Sabotage:    { bg: 'rgba(74, 26, 26, 0.6)',    border: 'rgba(229,62,62,0.4)',  text: '#fc8181' },
-  Ransomware:  { bg: 'rgba(74, 42, 10, 0.6)',    border: 'rgba(237,137,54,0.4)', text: '#f6ad55' },
-  Hacktivism:  { bg: 'rgba(42, 26, 74, 0.6)',    border: 'rgba(159,122,234,0.4)', text: '#b794f4' },
-};
-
-const getMotivationStyle = (motivation) => {
-  for (const [key, style] of Object.entries(MOTIVATION_STYLE)) {
-    if (motivation?.toLowerCase().includes(key.toLowerCase())) return style;
-  }
-  return { bg: 'rgba(255,255,255,0.05)', border: 'rgba(255,255,255,0.1)', text: 'var(--text-muted)' };
-};
+const getJson = (url) => fetch(url).then(res => {
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+});
 
 const ThreatActors = () => {
   const [actors, setActors]           = useState([]);
   const [loading, setLoading]         = useState(true);
+  const [error, setError]             = useState(null);
   const [searchTerm, setSearchTerm]   = useState('');
-  const [filter, setFilter]           = useState('All');
   const [selectedActor, setSelectedActor] = useState(null);
   const [isFocused, setIsFocused]     = useState(false);
   const [suggestions, setSuggestions] = useState([]);
   const searchRef = useRef(null);
 
   const loadActorDetails = (id) => {
-    fetch(`http://127.0.0.1:8000/api/threat-actors/${id}`)
-      .then(res => res.json())
-      .then(data => setSelectedActor(data))
-      .catch(err => console.error(err));
+    getJson(`http://127.0.0.1:8000/api/threat-actors/${id}`)
+      .then(data => { setSelectedActor(data); setError(null); })
+      .catch(err => setError(`Could not load this group (${err.message}).`));
   };
 
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/threat-actors')
-      .then(res => res.json())
-      .then(data => { setActors(data); setLoading(false); })
-      .catch(err => { console.error('Fetch error:', err); setLoading(false); });
+    getJson('http://127.0.0.1:8000/api/threat-actors')
+      .then(data => setActors(data))
+      .catch(err => setError(`Could not load threat actors (${err.message}). Is the backend running?`))
+      .finally(() => setLoading(false));
+  }, []);
 
-    // Keyboard shortcuts
+  // Keyboard shortcuts: "/" focuses search; Esc closes the drawer if open, otherwise clears the search
+  useEffect(() => {
     const handleKeyDown = (e) => {
       if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
         e.preventDefault();
         searchRef.current?.focus();
       }
       if (e.key === 'Escape') {
-        setSearchTerm('');
-        searchRef.current?.blur();
+        if (selectedActor) {
+          setSelectedActor(null);
+        } else {
+          setSearchTerm('');
+          searchRef.current?.blur();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [selectedActor]);
 
   const filteredActors = actors.filter(actor => {
-    const matchesFilter = filter === 'All' || actor.motivation?.toLowerCase().includes(filter.toLowerCase());
-    if (!matchesFilter) return false;
-
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase();
-      const country = getCountryInfo(actor.country);
-      return actor.name.toLowerCase().includes(term) ||
-             (actor.country && (country.name.toLowerCase().includes(term) || actor.country.toLowerCase().includes(term))) ||
-             (actor.aliases && actor.aliases.join(' ').toLowerCase().includes(term)) ||
-             (actor.mitre_id && actor.mitre_id.toLowerCase().includes(term)) ||
-             (actor.motivation && actor.motivation.toLowerCase().includes(term));
-    }
-    return true;
+    if (!searchTerm) return true;
+    const term = searchTerm.toLowerCase();
+    return actor.name.toLowerCase().includes(term) ||
+           (actor.aliases || []).join(' ').toLowerCase().includes(term) ||
+           (actor.mitre_id || '').toLowerCase().includes(term);
   });
 
   // Handle Suggestions
@@ -131,21 +96,10 @@ const ThreatActors = () => {
         if (!results.find(r => r.text === a.mitre_id))
           results.push({ text: a.mitre_id, category: 'MITRE ID', icon: Tag, value: a.mitre_id });
       }
-      const country = getCountryInfo(a.country);
-      if (a.country && country.name.toLowerCase().includes(term) && results.length < 5) {
-        if (!results.find(r => r.text === country.name))
-          results.push({ text: country.name, category: 'Country', icon: Flag, value: country.name });
-      }
     });
 
     setSuggestions(results.slice(0, 5));
   }, [searchTerm, actors]);
-
-  // Only motivations a source actually published (MITRE publishes none today)
-  const motivationOptions = [
-    { value: 'All', label: 'All' },
-    ...[...new Set(actors.map(a => a.motivation).filter(Boolean))].sort().map(m => ({ value: m, label: m })),
-  ];
 
   return (
     <div className="page-container" style={{ padding: '24px', position: 'relative' }}>
@@ -158,10 +112,9 @@ const ThreatActors = () => {
           <h1 style={{ margin: 0 }}>Threat <span className="italic-serif">Actors</span></h1>
         </div>
 
-        {/* 2. Live Badge */}
+        {/* 2. Count badge (weekly MITRE snapshot, not a live feed) */}
         <div className="status-badge" style={{ marginLeft: '16px', flexShrink: 0, height: 'fit-content', marginTop: '14px' }}>
-          <div className="status-dot"></div>
-          <span>LIVE — Tracking {actors.length} APTs &amp; Syndicates</span>
+          <span>{actors.length} MITRE ATT&amp;CK groups</span>
         </div>
 
         {/* 3. Spacer */}
@@ -271,23 +224,25 @@ const ThreatActors = () => {
             )}
           </div>
         </div>
-
-        {/* 5. Filter Dropdown (180px), hidden while no motivation is published */}
-        {motivationOptions.length > 1 && <div style={{ width: '180px', flexShrink: 0, marginLeft: '12px' }}>
-          <CustomDropdown 
-            options={motivationOptions}
-            value={filter}
-            onChange={(val) => setFilter(val)}
-          />
-        </div>}
       </div>
+
+      {error && (
+        <div role="alert" style={{ marginBottom: '16px', padding: '12px 16px', borderRadius: '6px', border: '1px solid rgba(229,62,62,0.4)', background: 'rgba(74,26,26,0.6)', color: '#fc8181' }}>
+          {error}
+        </div>
+      )}
 
       {/* ── Card Grid ── */}
       {filteredActors.length === 0 && !loading ? (
         <div style={{ textAlign: 'center', padding: '100px 0', opacity: 0.8 }}>
           <Search size={48} color="var(--text-muted)" style={{ marginBottom: '1rem', opacity: 0.3 }} />
-          <h3 style={{ color: 'var(--text-secondary)' }}>No threat actors found matching "{searchTerm}"</h3>
-          <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Try searching by name, country, or MITRE ID.</p>
+          {searchTerm ? (<>
+            <h3 style={{ color: 'var(--text-secondary)' }}>No threat actors found matching "{searchTerm}"</h3>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Try searching by name, alias, or MITRE ID.</p>
+          </>) : !error && (<>
+            <h3 style={{ color: 'var(--text-secondary)' }}>No MITRE ATT&amp;CK data yet</h3>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem' }}>Groups appear after the MITRE sync, which runs at startup and weekly.</p>
+          </>)}
         </div>
       ) : (
         <div className="actor-grid" style={{
@@ -309,8 +264,6 @@ const ThreatActors = () => {
               <div key={i} className="glass-panel skeleton" style={{ height: '160px', borderRadius: '6px' }} />
             ))
           ) : filteredActors.map(actor => {
-            const { flag, name: countryName } = getCountryInfo(actor.country);
-            const motStyle = getMotivationStyle(actor.motivation);
             const techCount = actor.techniques?.length ?? 0;
 
             return (
@@ -327,45 +280,9 @@ const ThreatActors = () => {
                 }}
                 onClick={() => loadActorDetails(actor.id)}
               >
-                {/* ── ROW 1: Name + flag + motivation badge ── */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', padding: '16px 16px 12px 16px' }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{
-                      fontWeight: 700,
-                      fontSize: '1rem',
-                      color: 'var(--accent-gold)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      flexWrap: 'wrap',
-                    }}>
-                      <Highlight text={actor.name} highlight={searchTerm} />
-                      {actor.country && (<>
-                        <span style={{ fontSize: '1.1rem' }}>{flag}</span>
-                        <span style={{ fontWeight: 400, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                          <Highlight text={countryName} highlight={searchTerm} />
-                        </span>
-                      </>)}
-                    </div>
-                  </div>
-                  {actor.motivation && (
-                  <span style={{
-                    flexShrink: 0,
-                    marginLeft: '8px',
-                    background: motStyle.bg,
-                    border: `1px solid ${motStyle.border}`,
-                    color: motStyle.text,
-                    padding: '2px 8px',
-                    borderRadius: '4px',
-                    fontSize: '0.65rem',
-                    fontWeight: 700,
-                    textTransform: 'uppercase',
-                    letterSpacing: '0.6px',
-                    whiteSpace: 'nowrap',
-                  }}>
-                    {actor.motivation}
-                  </span>
-                  )}
+                {/* ── ROW 1: Name ── */}
+                <div style={{ padding: '16px 16px 12px 16px', fontWeight: 700, fontSize: '1rem', color: 'var(--accent-gold)' }}>
+                  <Highlight text={actor.name} highlight={searchTerm} />
                 </div>
 
                 {/* ── DIVIDER ── */}
@@ -373,7 +290,7 @@ const ThreatActors = () => {
 
                 {/* ── ROW 2: Stats ── */}
                 <div style={{ display: 'flex', padding: '12px 16px', gap: '1rem', flex: 1 }}>
-                  <div style={{ flex: '0 0 40%' }}>
+                  <div>
                     <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>ATT&amp;CK Techniques</div>
                     <div style={{
                       fontSize: '1.5rem',
@@ -385,19 +302,12 @@ const ThreatActors = () => {
                       {techCount}
                     </div>
                   </div>
-                  <div style={{ width: '1px', background: 'rgba(184,146,42,0.15)', alignSelf: 'stretch' }} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>Last Seen (MITRE)</div>
-                    <div style={{ fontSize: '0.85rem', color: actor.last_seen ? 'var(--text-primary)' : 'var(--text-muted)', fontWeight: 600 }}>
-                      {actor.last_seen ? String(actor.last_seen).slice(0, 10) : 'Unknown'}
-                    </div>
-                  </div>
                 </div>
 
                 {/* ── DIVIDER ── */}
                 <div style={{ height: '1px', background: 'rgba(184,146,42,0.15)', margin: '0 16px' }} />
 
-                {/* ── ROW 3: MITRE ID + Active ── */}
+                {/* ── ROW 3: MITRE ID ── */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 16px 14px 16px' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <ShieldAlert size={13} color="var(--danger)" />
@@ -408,11 +318,7 @@ const ThreatActors = () => {
                       </span>
                     </span>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.78rem', color: 'var(--success)' }}>
-                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--success)' }} />
-                    Active
-                    <ChevronRight size={13} color="var(--text-muted)" />
-                  </div>
+                  <ChevronRight size={13} color="var(--text-muted)" />
                 </div>
               </div>
             );
@@ -420,17 +326,14 @@ const ThreatActors = () => {
         </div>
       )}
 
-      {/* ── Detail Drawer (unchanged structure) ── */}
+      {/* ── Detail Drawer ── */}
       {selectedActor && (
         <div className="drawer-overlay" onClick={() => setSelectedActor(null)}>
           <div className="drawer" onClick={e => e.stopPropagation()} style={{ width: '600px' }}>
             <div className="drawer-header">
               <div>
                 <div className="label-small">{selectedActor.group.mitre_id}</div>
-                <h2>
-                  {selectedActor.group.name}{' '}
-                  {selectedActor.group.country && getCountryInfo(selectedActor.group.country).flag}
-                </h2>
+                <h2>{selectedActor.group.name}</h2>
               </div>
               <button className="close-btn" onClick={() => setSelectedActor(null)}>✕</button>
             </div>
@@ -439,11 +342,7 @@ const ThreatActors = () => {
               <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem', flexWrap: 'wrap' }}>
                 <div style={{ background: 'rgba(255,255,255,0.05)', padding: '0.5rem 1rem', borderRadius: '4px' }}>
                   <div className="label-small" style={{ fontSize: '0.7rem' }}>Origin</div>
-                  <div style={{ fontWeight: 600 }}>
-                    {selectedActor.group.country
-                      ? `${getCountryInfo(selectedActor.group.country).flag} ${selectedActor.group.country}`
-                      : 'Not published by MITRE'}
-                  </div>
+                  <div style={{ fontWeight: 600 }}>{selectedActor.group.country || 'Not published by MITRE'}</div>
                 </div>
                 <div style={{ background: 'rgba(255,255,255,0.05)', padding: '0.5rem 1rem', borderRadius: '4px' }}>
                   <div className="label-small" style={{ fontSize: '0.7rem' }}>Motivation</div>
@@ -461,35 +360,31 @@ const ThreatActors = () => {
                 )}
               </div>
 
-              <div className="asset-section" style={{ marginBottom: '2rem' }}>
-                <div className="label-small">Known Exploited Vulnerabilities</div>
-                {selectedActor.linked_cves && selectedActor.linked_cves.length > 0 ? (
-                  <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '1rem', fontSize: '0.9rem' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left', color: 'var(--text-secondary)' }}>
-                        <th style={{ paddingBottom: '0.5rem' }}>CVE</th>
-                        <th style={{ paddingBottom: '0.5rem' }}>Technique</th>
-                        <th style={{ paddingBottom: '0.5rem' }}>Confidence</th>
+              <div className="label-small">ATT&amp;CK Techniques ({selectedActor.techniques.length})</div>
+              {selectedActor.techniques.length > 0 ? (
+                <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: '0.75rem', fontSize: '0.85rem' }}>
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid var(--border)', textAlign: 'left', color: 'var(--text-secondary)' }}>
+                      <th style={{ paddingBottom: '0.5rem' }}>ID</th>
+                      <th style={{ paddingBottom: '0.5rem' }}>Technique</th>
+                      <th style={{ paddingBottom: '0.5rem' }}>Tactic</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {selectedActor.techniques.map(t => (
+                      <tr key={t.technique_id} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                        <td style={{ padding: '0.5rem 0.75rem 0.5rem 0', fontFamily: 'JetBrains Mono', color: 'var(--accent-gold)', whiteSpace: 'nowrap' }}>
+                          <a href={`https://attack.mitre.org/techniques/${t.technique_id.replace('.', '/')}/`} target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>{t.technique_id}</a>
+                        </td>
+                        <td style={{ padding: '0.5rem 0.75rem 0.5rem 0' }}>{t.name}</td>
+                        <td style={{ padding: '0.5rem 0', color: 'var(--text-muted)' }}>{t.tactic || '—'}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {selectedActor.linked_cves.map((link, idx) => (
-                        <tr key={idx} style={{ borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
-                          <td style={{ padding: '0.75rem 0', fontFamily: 'JetBrains Mono', color: 'var(--accent-gold)' }}>{link.cve_id}</td>
-                          <td style={{ padding: '0.75rem 0', fontSize: '0.85rem' }}>{link.technique_id || '—'}</td>
-                          <td style={{ padding: '0.75rem 0' }}>
-                            <span className={`severity-badge ${link.confidence === 'confirmed' ? 'severity-critical' : 'severity-medium'}`}>
-                              {link.confidence?.toUpperCase()}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                ) : (
-                  <p style={{ color: 'var(--text-muted)', marginTop: '0.5rem' }}>No direct CVE linkages identified in MITRE database for this group.</p>
-                )}
-              </div>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p style={{ color: 'var(--text-muted)', marginTop: '0.5rem' }}>MITRE lists no techniques for this group.</p>
+              )}
             </div>
           </div>
         </div>
