@@ -6,3 +6,7 @@ export const getRiskColor = (score) => {
   if (score >= 31) return 'var(--accent-gold)';
   return 'var(--success)';
 };
+
+// Same colours keyed by the band name the API returns ("HIGH", "High"); unknown or empty -> muted
+const BAND_COLORS = { CRITICAL: 'var(--danger)', HIGH: 'var(--warning)', MEDIUM: 'var(--accent-gold)', LOW: 'var(--success)' };
+export const getBandColor = (band) => BAND_COLORS[String(band || '').toUpperCase()] || 'var(--text-muted)';

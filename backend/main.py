@@ -138,6 +138,9 @@ async def lifespan(app: FastAPI):
     with db.engine.begin() as conn:
         _relax_flagged_abuse_score(conn)
         conn.execute(text("DROP TABLE IF EXISTS cve_to_groups"))  # no source links CVEs to groups; the model is gone
+        # Briefs from the pre-GPT-4o template stated made-up incident counts and advice
+        conn.execute(text("DELETE FROM morning_briefs WHERE content LIKE 'ThreatLens detected % active incidents.%"
+                          "Monitor network for lateral movement indicators.'"))
         for table, columns in added_columns.items():
             have = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
             for col, col_type in columns:
@@ -240,14 +243,17 @@ async def root():
     return {"status": "online", "version": "2.0.0"}
 
 
+def _local_midnight_utc():
+    """Start of the user's local day as naive UTC, the way SQLite stores our datetimes."""
+    return (datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+            .astimezone(timezone.utc).replace(tzinfo=None))
+
+
 @app.get("/api/overview")
 async def get_overview(db: Session = Depends(db.get_db)):
     """Get overview metrics for dashboard"""
     try:
-        # Get metrics
-        # local midnight; published_date is stored as naive UTC
-        today = (datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
-                 .astimezone(timezone.utc).replace(tzinfo=None))
+        today = _local_midnight_utc()
         cves_today = db.query(models.CVE).filter(models.CVE.published_date >= today)
         total_cves = cves_today.count()
         active_incidents = (
@@ -285,6 +291,7 @@ async def get_overview(db: Session = Depends(db.get_db)):
                 'cvss_score': threat.cvss_score,
                 'epss_score': threat.epss_score,
                 'cisa_kev': bool(threat.cisa_kev),
+                'risk_band': threat.risk_band,
             })
         
         # Get activity log (simplified)
@@ -295,19 +302,22 @@ async def get_overview(db: Session = Depends(db.get_db)):
                 'id': f"cve-{cve.id}",
                 'type': 'CVE',
                 'message': f"New CVE {cve.cve_id} detected",
-                'timestamp': cve.created_at.isoformat() if cve.created_at else datetime.now(timezone.utc).isoformat(),
+                'timestamp': _iso_utc(cve.created_at or datetime.now(timezone.utc)),
                 'severity': (cve.risk_band or '').title()
             })
         
         recent_incidents = db.query(models.Incident).order_by(models.Incident.created_at.desc()).limit(5).all()
+        asset_names = dict(db.query(models.Asset.id, models.Asset.name).all())
         for incident in recent_incidents:
+            machine = asset_names.get(incident.machine_id) or f"asset #{incident.machine_id}"
             activity_log.append({
                 'id': f"incident-{incident.id}",
                 'type': 'Incident',
-                'message': f"Security incident on {incident.machine_id}",
-                'timestamp': incident.created_at.isoformat() if incident.created_at else datetime.now(timezone.utc).isoformat(),
+                'message': f"{incident.type or 'Security incident'} on {machine}",
+                'timestamp': _iso_utc(incident.created_at or datetime.now(timezone.utc)),
                 'severity': incident.severity
             })
+        activity_log.sort(key=lambda a: a['timestamp'], reverse=True)  # all ISO UTC, so text order is time order
         
         # Get morning brief
         morning_brief = db.query(models.MorningBrief).order_by(models.MorningBrief.date.desc()).first()
@@ -324,7 +334,7 @@ async def get_overview(db: Session = Depends(db.get_db)):
             'activityLog': activity_log,
             'morningBrief': {
                 'content': morning_brief.content if morning_brief else None,
-                'date': morning_brief.date.isoformat() if morning_brief else None
+                'date': _iso_utc(morning_brief.date) if morning_brief else None
             }
         }
     except Exception as e:
@@ -407,8 +417,7 @@ NO_GUESSING = ("Use ONLY the facts in the data provided. Do not invent CVEs, thr
 @app.post("/api/morning-brief/generate")
 async def generate_morning_brief(db: Session = Depends(db.get_db)):
     """Daily brief written by GPT-4o from stored CVEs, incidents and OSINT alerts."""
-    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    existing = db.query(models.MorningBrief).filter(models.MorningBrief.date >= today).first()
+    existing = db.query(models.MorningBrief).filter(models.MorningBrief.date >= _local_midnight_utc()).first()
     top_cves = db.query(models.CVE).order_by(models.CVE.risk_score.desc().nullslast()).limit(10).all()
     active = db.query(models.Incident).filter(models.Incident.status == "Active").limit(10).all()
     osint = db.query(models.OSINTAlert).order_by(models.OSINTAlert.created_at.desc()).limit(10).all()
@@ -436,6 +445,7 @@ async def generate_morning_brief(db: Session = Depends(db.get_db)):
     if existing:
         existing.content, existing.patterns, existing.actions, existing.top_threats = content, patterns, actions, top_threats
         db.commit()
+        await manager.broadcast(json.dumps({"type": "MORNING_BRIEF_GENERATED", "time": str(datetime.now(timezone.utc))}))
         return existing
     brief = models.MorningBrief(
         date=datetime.now(timezone.utc), content=content,
