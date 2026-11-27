@@ -243,6 +243,11 @@ async def root():
     return {"status": "online", "version": "2.0.0"}
 
 
+def _open_incidents(db: Session):
+    """Incidents nobody has resolved yet (status Active or Investigating)."""
+    return db.query(models.Incident).filter(models.Incident.status != "Resolved")
+
+
 def _local_midnight_utc():
     """Start of the user's local day as naive UTC, the way SQLite stores our datetimes."""
     return (datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -256,11 +261,7 @@ async def get_overview(db: Session = Depends(db.get_db)):
         today = _local_midnight_utc()
         cves_today = db.query(models.CVE).filter(models.CVE.published_date >= today)
         total_cves = cves_today.count()
-        active_incidents = (
-            db.query(models.Incident)
-            .filter(models.Incident.status == "Active")
-            .count()
-        )
+        open_incidents = _open_incidents(db).count()
         critical_count = (
             db.query(models.CVE).filter(models.CVE.risk_band == "CRITICAL").count()
         )
@@ -326,7 +327,7 @@ async def get_overview(db: Session = Depends(db.get_db)):
         return {
             'metrics': {
                 'totalCves': total_cves,
-                'activeIncidents': active_incidents,
+                'openIncidents': open_incidents,
                 'criticalThreats': critical_count,
                 'assetsRegistered': len(all_assets),
                 'agentsOnline': agents_online
@@ -421,13 +422,13 @@ async def generate_morning_brief(db: Session = Depends(db.get_db)):
     """Daily brief written by GPT-4o from stored CVEs, incidents and OSINT alerts."""
     existing = db.query(models.MorningBrief).filter(models.MorningBrief.date >= _local_midnight_utc()).first()
     top_cves = db.query(models.CVE).order_by(models.CVE.risk_score.desc().nullslast()).limit(10).all()
-    active = db.query(models.Incident).filter(models.Incident.status == "Active").limit(10).all()
+    active = _open_incidents(db).order_by(models.Incident.created_at.desc()).limit(10).all()
     osint = db.query(models.OSINTAlert).order_by(models.OSINTAlert.created_at.desc()).limit(10).all()
     data = "\n\n".join([
         "HIGHEST RISK-SCORE CVEs (score and band from the platform's scoring engine):\n"
         + ("\n".join(_cve_context_line(c) for c in top_cves) or "  none"),
-        "ACTIVE INCIDENTS:\n" + ("\n".join(
-            f"  - #{i.id} [{i.severity}] {i.type} {i.process_name or ''}: {(i.details or '')[:150]}" for i in active) or "  none"),
+        "OPEN INCIDENTS (not yet resolved):\n" + ("\n".join(
+            f"  - #{i.id} [{i.severity}] [{i.status}] {i.type} {i.process_name or ''}: {(i.details or '')[:150]}" for i in active) or "  none"),
         "RECENT OSINT ALERTS:\n" + ("\n".join(
             f"  - [{o.severity}] {o.type} {o.indicator} ({o.source}): {(o.description or '')[:120]}" for o in osint) or "  none"),
     ])
@@ -570,7 +571,7 @@ async def get_assets(db: Session = Depends(db.get_db)):
     for asset in assets:
         incidents = (db.query(models.Incident).filter(models.Incident.machine_id == asset.id)
                      .order_by(models.Incident.created_at.desc()).all())
-        active_incidents = [i for i in incidents if i.status == "Active"]
+        open_incidents = [i for i in incidents if i.status != "Resolved"]
         latest_incident = incidents[0] if incidents else None
         # Exposure: CVEs whose NVD CPE products match this asset's software (published data, scored in scoring.py)
         matching = [c for c in affected_cves if matched_software(c, asset.software_list, asset.software_versions)]
@@ -590,7 +591,7 @@ async def get_assets(db: Session = Depends(db.get_db)):
             "location_label": asset.location_label,
             "matching_cve_count": len(matching),
             "top_cve": {"cve_id": top.cve_id, "risk_score": round(top.risk_score or 0, 1), "risk_band": top.risk_band} if top else None,
-            "active_incident_count": len(active_incidents),
+            "open_incident_count": len(open_incidents),
             "latest_incident_summary": (latest_incident.type + (": " + latest_incident.process_name if latest_incident.process_name else "")) if latest_incident else None,
         })
     return result
@@ -748,14 +749,14 @@ async def respond_to_incident(
     if not incident:
         raise HTTPException(status_code=404, detail="Incident not found")
 
-    if action.action == "approve":
-        incident.status = "Resolved"
-        response_note = f"Analyst approved response. Note: {action.analyst_note or 'None'}"
-    else:
-        incident.status = "Investigating"
-        response_note = f"Analyst rejected auto-response. Note: {action.analyst_note or 'None'}"
+    # Analysts set the status by hand; ThreatLens takes no automatic response actions
+    statuses = {"resolve": "Resolved", "investigate": "Investigating"}
+    if action.action not in statuses:
+        raise HTTPException(status_code=422, detail="action must be 'resolve' or 'investigate'")
+    incident.status = statuses[action.action]
+    response_note = f"Analyst marked the incident {incident.status.lower()}" + (f". Note: {action.analyst_note}" if action.analyst_note else "")
 
-    timeline_entry = {"time": str(datetime.now(timezone.utc)), "action": response_note, "actor": "Analyst"}
+    timeline_entry = {"time": datetime.now(timezone.utc).isoformat(), "action": response_note, "actor": "Analyst"}
     incident.timeline = (incident.timeline or []) + [timeline_entry]
     db.commit()
     await manager.broadcast(
@@ -1000,34 +1001,6 @@ async def get_cve_correlations(cve_id: str, db: Session = Depends(db.get_db)):
                            for i in incidents],
     }
 
-@app.get("/api/incidents/{incident_id}/correlations")
-async def get_incident_correlations(incident_id: int, db: Session = Depends(db.get_db)):
-    """Get correlation data for an incident"""
-    try:
-        incident = db.query(models.Incident).filter(models.Incident.id == incident_id).first()
-        if not incident:
-            raise HTTPException(status_code=404, detail="Incident not found")
-        
-        # Look for related CVEs (simplified correlation logic)
-        related_cves = db.query(models.CVE).filter(
-            models.CVE.actively_exploited == True
-        ).limit(5).all()
-        
-        correlation_statement = None
-        if related_cves and incident.severity in ['Critical', 'High']:
-            correlation_statement = f"Incident behavior matches exploitation patterns of {related_cves[0].cve_id if related_cves else 'known vulnerabilities'}"
-        
-        return {
-            'correlation_statement': correlation_statement,
-            'related_cves': [cve.cve_id for cve in related_cves],
-            'correlation_score': 0.7 if correlation_statement else 0.0
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logging.error(f"Error getting correlations for incident {incident_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
 @app.get("/api/incidents/{incident_id}/playbook")
 async def get_incident_playbook(incident_id: int, db: Session = Depends(db.get_db)):
     """Remediation playbook written by GPT-4o from this incident's recorded fields."""
@@ -1115,19 +1088,14 @@ async def copilot_ask(request: Request, db: Session = Depends(db.get_db)):
     if top_cves:
         context_parts.append("TOP CVEs IN DATABASE:\n" + "\n".join(_cve_context_line(c) for c in top_cves))
 
-    # Active incidents
-    active_incidents = (
-        db.query(models.Incident)
-        .filter(models.Incident.status == "Active")
-        .limit(5)
-        .all()
-    )
+    # Open incidents
+    active_incidents = _open_incidents(db).order_by(models.Incident.created_at.desc()).limit(5).all()
     if active_incidents:
         inc_lines = [
-            f"  - [{i.severity}] {i.type}: {(i.details or '')[:100]}"
+            f"  - [{i.severity}] [{i.status}] {i.type}: {(i.details or '')[:100]}"
             for i in active_incidents
         ]
-        context_parts.append("ACTIVE INCIDENTS:\n" + "\n".join(inc_lines))
+        context_parts.append("OPEN INCIDENTS:\n" + "\n".join(inc_lines))
 
     # OSINT alerts
     osint = (
@@ -1180,13 +1148,13 @@ async def copilot_ask(request: Request, db: Session = Depends(db.get_db)):
     # Threat actor stats
     total_cves = db.query(models.CVE).count()
     kev_count = db.query(models.CVE).filter(models.CVE.cisa_kev == True).count()
-    incident_count = db.query(models.Incident).filter(models.Incident.status == "Active").count()
+    incident_count = _open_incidents(db).count()
 
     context_parts.append(
         f"PLATFORM STATS:\n"
         f"  Total CVEs tracked: {total_cves}\n"
         f"  CISA KEV entries: {kev_count}\n"
-        f"  Active incidents: {incident_count}"
+        f"  Open incidents: {incident_count}"
     )
 
     context_block = "\n\n".join(context_parts)
@@ -1391,7 +1359,7 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
             "alerts_with_countries": alerts_with_countries,
             "total_cves": db.query(models.CVE).count(),
             "kev_count": db.query(models.CisaKev).count(),
-            "active_incidents": db.query(models.Incident).filter(models.Incident.status != "Resolved").count(),
+            "active_incidents": _open_incidents(db).count(),
         },
     }
 

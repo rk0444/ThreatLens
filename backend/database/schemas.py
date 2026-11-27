@@ -121,7 +121,7 @@ class IncidentResponse(IncidentBase):
 
 
 class AnalystAction(BaseModel):
-    action: str  # "approve" or "reject"
+    action: str  # "resolve" or "investigate"
     analyst_note: Optional[str] = None
 
 

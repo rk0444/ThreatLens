@@ -40,6 +40,7 @@ def test_status_comes_from_heartbeat_and_exposure_from_published_cves():
     assert asset["matching_cve_count"] == 2
     assert asset["top_cve"] == {"cve_id": "CVE-1", "risk_score": 74.2, "risk_band": "HIGH"}
     assert asset["latest_incident_summary"] == "new"  # newest, not the first row
+    assert asset["open_incident_count"] == 1  # the Resolved one is not open
     assert "risk_score" not in asset and "threats_blocked" not in asset and "files_quarantined" not in asset
 
     asyncio.run(main.asset_heartbeat(7, db))

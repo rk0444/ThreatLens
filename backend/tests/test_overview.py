@@ -40,7 +40,18 @@ def test_activity_log_is_newest_first_and_names_the_asset():
     assert log[0]["message"] == "Suspicious process on Workstation-1"
 
 
+def test_open_incidents_count_everything_not_resolved():
+    engine = create_engine("sqlite://")
+    models.Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+    db.add_all([models.Incident(machine_id=7, type=t, severity="High", status=s)
+                for t, s in [("a", "Active"), ("b", "Investigating"), ("c", "Resolved")]])
+    db.commit()
+    assert asyncio.run(main.get_overview(db))["metrics"]["openIncidents"] == 2  # Investigating is still open
+
+
 if __name__ == "__main__":
     test_overview_times_carry_utc_offset_and_top_threats_carry_band()
     test_activity_log_is_newest_first_and_names_the_asset()
+    test_open_incidents_count_everything_not_resolved()
     print("overview tests passed")

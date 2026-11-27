@@ -1,9 +1,19 @@
-import { useState, useEffect, useRef } from 'react';
-import { ShieldAlert, AlertTriangle, CheckCircle, Clock, X, ChevronRight, Activity, FileText, Zap, Brain, Copy } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { ShieldAlert, AlertTriangle, CheckCircle, Clock, X, ChevronRight, Activity, FileText, Copy } from 'lucide-react';
 import CustomDropdown from '../components/CustomDropdown';
+import { useWebSocket } from '../hooks/useWebSocket';
 
-const timeAgo = (dateStr) => {
-  const diff = Date.now() - new Date(dateStr).getTime();
+const API = 'http://127.0.0.1:8000';
+
+const getJson = async (url, options) => {
+  const res = await fetch(url, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `HTTP ${res.status}`);
+  return data;
+};
+
+const timeAgo = (dateStr, now) => {
+  const diff = now - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return 'Just now';
   if (mins < 60) return `${mins}m ago`;
@@ -25,123 +35,98 @@ const STATUS_COLORS = {
   Resolved:      { bg: 'rgba(72,187,120,0.1)',  border: 'var(--success)',  text: 'var(--success)' },
 };
 
-const getMitreStageColor = (stage) => {
-  const colors = {
-    'Initial Access': '#dc2626',
-    'Execution': '#ea580c',
-    'Persistence': '#d97706',
-    'Privilege Escalation': '#ca8a04',
-    'Defense Evasion': '#65a30d',
-    'Credential Access': '#16a34a',
-    'Discovery': '#0891b2',
-    'Lateral Movement': '#2563eb',
-    'Collection': '#7c3aed',
-    'Exfiltration': '#c026d3',
-    'Command and Control': '#db2777',
-    'Impact': '#991b1b'
-  };
-  return colors[stage] || '#6b7280';
-};
-
-const copyToClipboard = async (text, stepId) => {
-  try {
-    await navigator.clipboard.writeText(text);
-    // Show copied feedback
-    const btn = document.getElementById(`copy-btn-${stepId}`);
-    if (btn) {
-      const originalHTML = btn.innerHTML;
-      btn.innerHTML = '<CheckCircle size={16} color="var(--success)" />';
-      setTimeout(() => {
-        btn.innerHTML = originalHTML;
-      }, 2000);
-    }
-  } catch (err) {
-    console.error('Failed to copy:', err);
-  }
-};
-
 const Incidents = () => {
   const [incidents, setIncidents] = useState([]);
-  const [selected, setSelected]   = useState(null);
+  const [machineNames, setMachineNames] = useState({});
+  const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState(null);
+  const [actionError, setActionError] = useState(null);
   const [newIds, setNewIds]        = useState(new Set());
-  const [playbook, setPlaybook]   = useState(null);
-  const [playbookLoading, setPlaybookLoading] = useState(false);
+  // A playbook belongs to the incident it was generated for; switching incidents mid-request can't mislabel it
+  const [playbookResult, setPlaybookResult] = useState(null); // { incidentId, data }
+  const [playbookLoadingId, setPlaybookLoadingId] = useState(null);
   const [analystNote, setAnalystNote] = useState('');
   const [filter, setFilter]        = useState({ severity: 'All', status: 'All' });
   const [expandSandbox, setExpandSandbox] = useState(false);
-  const [correlationData, setCorrelationData] = useState(null);
-  const [loadingCorrelation, setLoadingCorrelation] = useState(false);
-  const listRef = useRef(null);
+  const [copiedStep, setCopiedStep] = useState(null);
+  const [now, setNow] = useState(() => Date.now());
 
-  const fetchIncidents = () => {
-    fetch('http://127.0.0.1:8000/api/incidents')
-      .then(r => r.json())
-      .then(data => { setIncidents(data); setLoading(false); })
-      .catch(() => setLoading(false));
-  };
-
+  // Keep "x m ago" labels current while the page stays open
   useEffect(() => {
-    fetchIncidents();
-
-    const socket = new WebSocket('ws://127.0.0.1:8000/ws/events');
-    socket.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.type === 'NEW_INCIDENT') {
-          setIncidents(prev => [data.data, ...prev]);
-          setNewIds(prev => new Set([...prev, data.data.id]));
-          setTimeout(() => setNewIds(prev => { const n = new Set(prev); n.delete(data.data.id); return n; }), 3000);
-        }
-        if (data.type === 'INCIDENT_UPDATE') {
-          setIncidents(prev => prev.map(inc => inc.id === data.id ? { ...inc, status: data.status } : inc));
-          if (selected?.id === data.id) {
-            setSelected(prev => prev ? { ...prev, status: data.status } : null);
-          }
-        }
-      } catch {}
-    };
-    return () => socket.close();
+    const t = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(t);
   }, []);
 
+  // The open incident always comes from the latest list, so live updates reach it too
+  const selected = incidents.find(i => i.id === selectedId) || null;
+  const playbook = playbookResult?.incidentId === selectedId ? playbookResult.data : null;
+  const playbookLoading = playbookLoadingId !== null && playbookLoadingId === selectedId;
+  const machineLabel = (id) => machineNames[id] || `Machine #${id}`;
+
+  const fetchIncidents = useCallback(() =>
+    Promise.all([getJson(`${API}/api/incidents`), getJson(`${API}/api/assets`).catch(() => [])])
+      .then(([list, assets]) => {
+        setIncidents(list);
+        setMachineNames(Object.fromEntries(assets.map(a => [a.id, a.name])));
+        setError(null);
+      })
+      .catch(e => setError(`Could not load incidents (${e.message}). Is the backend running?`))
+      .finally(() => setLoading(false)), []);
+
+  useEffect(() => { fetchIncidents(); }, [fetchIncidents]);
+
+  useWebSocket(useCallback(msg => {
+    if (msg.type === 'NEW_INCIDENT') {
+      const id = msg.data?.id;
+      setNewIds(prev => new Set([...prev, id]));
+      setTimeout(() => setNewIds(prev => { const n = new Set(prev); n.delete(id); return n; }), 3000);
+    }
+    if (['NEW_INCIDENT', 'INCIDENT_UPDATE', 'ASSET_DELETED'].includes(msg.type)) fetchIncidents();
+  }, [fetchIncidents]));
+
   const selectIncident = (inc) => {
-    setSelected(inc);
-    setPlaybook(null);
+    setSelectedId(inc.id);
     setExpandSandbox(false);
     setAnalystNote('');
-    setCorrelationData(null);
-    
-    // Fetch correlation data
-    setLoadingCorrelation(true);
-    fetch(`http://127.0.0.1:8001/api/incidents/${inc.id}/correlations`)
-      .then(r => r.json())
-      .then(data => {
-        setCorrelationData(data);
-        setLoadingCorrelation(false);
-      })
-      .catch(() => setLoadingCorrelation(false));
+    setActionError(null);
   };
 
   const handleRespond = async (action) => {
     if (!selected) return;
-    const res = await fetch(`http://127.0.0.1:8000/api/incidents/${selected.id}/respond`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, analyst_note: analystNote })
-    });
-    const data = await res.json();
-    setSelected(prev => prev ? { ...prev, status: data.incident_status } : null);
-    setIncidents(prev => prev.map(i => i.id === selected.id ? { ...i, status: data.incident_status } : i));
+    setActionError(null);
+    try {
+      await getJson(`${API}/api/incidents/${selected.id}/respond`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, analyst_note: analystNote })
+      });
+      setAnalystNote('');
+      fetchIncidents();
+    } catch (e) {
+      setActionError(`Could not update the incident (${e.message}).`);
+    }
+  };
+
+  const copyCommand = async (text, step) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedStep(step);
+      setTimeout(() => setCopiedStep(s => (s === step ? null : s)), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
   };
 
   const loadPlaybook = async () => {
-    setPlaybookLoading(true);
+    const incidentId = selected.id;
+    setPlaybookLoadingId(incidentId);
     try {
-      const res = await fetch(`http://127.0.0.1:8000/api/incidents/${selected.id}/playbook`);
-      const data = await res.json();
-      setPlaybook(res.ok ? data : { error: data.detail || `Request failed (${res.status})` });
+      setPlaybookResult({ incidentId, data: await getJson(`${API}/api/incidents/${incidentId}/playbook`) });
+    } catch (e) {
+      setPlaybookResult({ incidentId, data: { error: e.message } });
     } finally {
-      setPlaybookLoading(false);
+      setPlaybookLoadingId(id => (id === incidentId ? null : id));
     }
   };
 
@@ -151,7 +136,7 @@ const Incidents = () => {
     return true;
   });
 
-  const activeCount = incidents.filter(i => i.status === 'Active').length;
+  const openCount = incidents.filter(i => i.status !== 'Resolved').length;
 
   const severityOptions = [
     { value: 'All', label: 'All Severities' },
@@ -171,16 +156,16 @@ const Incidents = () => {
   return (
     <div className="page-container" style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem', padding: '24px' }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
           <div className="label-small">SOC Operations</div>
           <h1>Live <span className="italic-serif">Incidents</span></h1>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <div style={{ background: 'rgba(229,62,62,0.15)', border: '1px solid var(--danger)', borderRadius: '6px', padding: '0.5rem 1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--danger)', animation: 'pulseCritical 2s infinite' }}></div>
-            <span style={{ color: '#fc8181', fontWeight: 700, fontSize: '1.2rem' }}>{activeCount}</span>
-            <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>ACTIVE</span>
+            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--danger)', animation: openCount > 0 ? 'pulseCritical 2s infinite' : 'none' }}></div>
+            <span style={{ color: '#fc8181', fontWeight: 700, fontSize: '1.2rem' }}>{openCount}</span>
+            <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>OPEN</span>
           </div>
           {/* Filters */}
           <div className="glass-panel" style={{ padding: '0.5rem 1rem', display: 'flex', gap: '1rem', alignItems: 'center', overflow: 'visible', zIndex: 10 }}>
@@ -199,7 +184,7 @@ const Incidents = () => {
       </div>
 
       {/* Main split panel */}
-      <div style={{ display: 'grid', gridTemplateColumns: selected ? '40% 60%' : '1fr', gap: '1.5rem', alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: selected ? 'minmax(0, 2fr) minmax(0, 3fr)' : 'minmax(0, 1fr)', gap: '1.5rem', alignItems: 'start' }}>
 
         {/* LEFT: Incidents Feed */}
         <div className="glass-panel" style={{ overflow: 'hidden' }}>
@@ -207,9 +192,15 @@ const Incidents = () => {
             <div className="label-small">INCIDENT FEED</div>
             <div className="label-small">{filteredIncidents.length} events</div>
           </div>
-          <div ref={listRef} style={{ maxHeight: '70vh', overflowY: 'auto' }}>
+          <div style={{ maxHeight: '70vh', overflowY: 'auto' }}>
             {loading ? (
               [1,2,3].map(i => <div key={i} className="skeleton" style={{ margin: '1rem', height: '80px', borderRadius: '4px' }}></div>)
+            ) : error ? (
+              <div role="alert" style={{ padding: '2rem', textAlign: 'center', color: '#fc8181' }}>{error}</div>
+            ) : incidents.length === 0 ? (
+              <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                No incidents yet. The network and process monitors file one when they detect something.
+              </div>
             ) : filteredIncidents.length === 0 ? (
               <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>No incidents match current filters.</div>
             ) : filteredIncidents.map(inc => {
@@ -220,7 +211,10 @@ const Incidents = () => {
               return (
                 <div
                   key={inc.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => selectIncident(inc)}
+                  onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectIncident(inc); } }}
                   style={{
                     padding: '1rem 1.5rem',
                     borderBottom: '1px solid var(--border)',
@@ -237,19 +231,15 @@ const Incidents = () => {
                       <span style={{ fontSize: '0.75rem', background: statusCfg.bg, color: statusCfg.text, border: `1px solid ${statusCfg.border}`, padding: '0.1rem 0.5rem', borderRadius: '3px' }}>{inc.status}</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                      <Clock size={12} /> {timeAgo(inc.created_at)}
+                      <Clock size={12} /> {timeAgo(inc.created_at, now)}
                     </div>
                   </div>
                   <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>{inc.type}</div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
                     <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', fontFamily: 'JetBrains Mono' }}>
-                      {inc.process_name || inc.network_connection || 'Machine ID: ' + inc.machine_id}
+                      {inc.process_name || inc.network_connection || ''}
                     </div>
-                    {inc.auto_response_action && (
-                      <div style={{ fontSize: '0.7rem', color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                        <Zap size={11} /> Auto-responded
-                      </div>
-                    )}
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.75rem', flexShrink: 0 }}>{machineLabel(inc.machine_id)}</div>
                   </div>
                 </div>
               );
@@ -263,17 +253,25 @@ const Incidents = () => {
             {/* Detail Header */}
             <div style={{ padding: '1.5rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', position: 'sticky', top: 0, background: 'var(--surface)', zIndex: 10 }}>
               <div>
-                <div className="label-small">Machine ID: {selected.machine_id}</div>
+                <div className="label-small">{machineLabel(selected.machine_id)}</div>
                 <h2 style={{ margin: '0.25rem 0' }}>{selected.type}</h2>
                 <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
                   <span className={`severity-badge ${(SEVERITY_CONFIG[selected.severity] || SEVERITY_CONFIG.Low).className}`}>{selected.severity}</span>
                   <span style={{ fontSize: '0.75rem', background: (STATUS_COLORS[selected.status] || STATUS_COLORS.Active).bg, color: (STATUS_COLORS[selected.status] || STATUS_COLORS.Active).text, border: `1px solid ${(STATUS_COLORS[selected.status] || STATUS_COLORS.Active).border}`, padding: '0.1rem 0.5rem', borderRadius: '3px' }}>{selected.status}</span>
                 </div>
               </div>
-              <button className="close-btn" onClick={() => setSelected(null)}><X /></button>
+              <button className="close-btn" aria-label="Close" onClick={() => setSelectedId(null)}><X /></button>
             </div>
 
             <div style={{ padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '2rem' }}>
+              {/* What the monitor recorded */}
+              {selected.details && (
+                <div>
+                  <div className="label-small" style={{ marginBottom: '0.5rem' }}>DETECTION DETAILS</div>
+                  <div style={{ color: 'var(--text-secondary)', lineHeight: 1.6, fontSize: '0.9rem' }}>{selected.details}</div>
+                </div>
+              )}
+
               {/* Quick info */}
               <div className="info-grid">
                 {selected.process_name && <div className="info-item"><span className="label-small">Process</span><div className="value" style={{ fontFamily: 'JetBrains Mono', fontSize: '0.85rem' }}>{selected.process_name}</div></div>}
@@ -294,121 +292,13 @@ const Incidents = () => {
                     <div key={idx} style={{ position: 'relative', marginBottom: '1.25rem' }}>
                       <div style={{ position: 'absolute', left: '-1.5rem', top: '4px', width: '14px', height: '14px', borderRadius: '50%', background: idx === 0 ? 'var(--accent-gold)' : 'var(--border)', border: '2px solid var(--surface)' }}></div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.2rem' }}>
-                        {entry.time ? new Date(typeof entry.time === 'number' ? entry.time * 1000 : entry.time).toLocaleTimeString() : ''}
+                        {entry.time ? new Date(typeof entry.time === 'number' ? entry.time * 1000 : entry.time).toLocaleString() : ''}
                         {entry.actor && <span style={{ marginLeft: '0.5rem', color: 'var(--accent-gold)' }}> — {entry.actor}</span>}
                       </div>
                       <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>{entry.action || entry.event}</div>
                     </div>
                   ))}
                 </div>
-              </div>
-
-              {/* Correlation Section */}
-              {correlationData && correlationData.correlation_statement && (
-                <div style={{ 
-                  background: 'linear-gradient(135deg, rgba(251, 191, 36, 0.15), rgba(245, 158, 11, 0.15))', 
-                  border: '1px solid #f59e0b', 
-                  borderRadius: '6px', 
-                  padding: '1rem', 
-                  marginBottom: '2rem'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-                    <AlertTriangle size={20} color="#f59e0b" />
-                    <div style={{ fontWeight: 600, fontSize: '0.9rem', color: '#f59e0b' }}>THREAT CORRELATION</div>
-                  </div>
-                  <div style={{ fontSize: '0.85rem', lineHeight: 1.5, color: '#f59e0b' }}>
-                    {correlationData.correlation_statement}
-                  </div>
-                  {correlationData.related_cves && correlationData.related_cves.length > 0 && (
-                    <div style={{ marginTop: '0.75rem', fontSize: '0.8rem', color: '#f59e0b' }}>
-                      <strong>Related CVEs:</strong> {correlationData.related_cves.join(', ')}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Enhanced AI Summary */}
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                  <Brain size={18} color="var(--accent-gold)" />
-                  <div className="label-small" style={{ margin: 0 }}>AI ANALYST SUMMARY</div>
-                </div>
-                
-                {selected.ai_summary ? (
-                  <div style={{ 
-                    background: 'rgba(255,255,255,0.02)', 
-                    border: '1px solid var(--border)', 
-                    borderRadius: '6px', 
-                    padding: '1.25rem' 
-                  }}>
-                    <div style={{ color: 'var(--text-secondary)', lineHeight: 1.6, fontSize: '0.9rem', marginBottom: '1rem' }}>
-                      {selected.ai_summary}
-                    </div>
-                    
-                    {/* MITRE ATT&CK Stage Badge */}
-                    {selected.mitre_tags && selected.mitre_tags.length > 0 && (
-                      <div style={{ marginBottom: '1rem' }}>
-                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>MITRE ATT&CK Classification</div>
-                        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-                          {selected.mitre_tags.map((tag, idx) => {
-                            // Check if this tag is a MITRE stage
-                            const stages = ['Initial Access', 'Execution', 'Persistence', 'Privilege Escalation', 'Defense Evasion', 'Credential Access', 'Discovery', 'Lateral Movement', 'Collection', 'Exfiltration', 'Command and Control', 'Impact'];
-                            const isStage = stages.includes(tag);
-                            
-                            return (
-                              <div key={idx}>
-                                {isStage ? (
-                                  <div 
-                                    style={{ 
-                                      display: 'inline-block',
-                                      background: getMitreStageColor(tag),
-                                      color: 'white',
-                                      padding: '0.75rem 1.25rem',
-                                      borderRadius: '25px',
-                                      fontSize: '0.9rem',
-                                      fontWeight: 600,
-                                      textTransform: 'uppercase',
-                                      letterSpacing: '0.5px',
-                                      boxShadow: '0 2px 8px rgba(0,0,0,0.2)'
-                                    }}
-                                  >
-                                    {tag}
-                                  </div>
-                                ) : (
-                                  <span 
-                                    style={{ 
-                                      background: 'rgba(255,255,255,0.1)',
-                                      border: '1px solid var(--border)',
-                                      color: 'var(--text-secondary)',
-                                      padding: '0.25rem 0.75rem',
-                                      borderRadius: '12px',
-                                      fontSize: '0.75rem',
-                                      fontFamily: 'JetBrains Mono'
-                                    }}
-                                  >
-                                    {tag}
-                                  </span>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div style={{ 
-                    background: 'rgba(255,255,255,0.02)', 
-                    border: '1px solid var(--border)', 
-                    borderRadius: '6px', 
-                    padding: '1.25rem',
-                    textAlign: 'center',
-                    color: 'var(--text-muted)',
-                    fontSize: '0.85rem'
-                  }}>
-                    AI analysis unavailable. Check back later.
-                  </div>
-                )}
               </div>
 
               {/* Sandbox Report */}
@@ -431,44 +321,36 @@ const Incidents = () => {
                 </div>
               )}
 
-              {/* Auto-Response section */}
-              <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border)', borderRadius: '4px', padding: '1.25rem' }}>
-                <div className="label-small" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <Zap size={14} /> AUTO-RESPONSE
-                </div>
-                {selected.auto_response_action ? (
-                  <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginBottom: '1rem' }}>
-                    <span style={{ color: 'var(--warning)' }}>Action taken:</span> {selected.auto_response_action}
+              {/* Analyst action: status is set by hand (ThreatLens takes no automatic response actions) */}
+              {selected.status !== 'Resolved' && (
+                <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border)', borderRadius: '4px', padding: '1.25rem' }}>
+                  <div className="label-small" style={{ marginBottom: '1rem' }}>ANALYST ACTION</div>
+                  <textarea
+                    value={analystNote}
+                    onChange={e => setAnalystNote(e.target.value)}
+                    placeholder="Add analyst note (optional, saved in the timeline)..."
+                    aria-label="Analyst note"
+                    style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)', borderRadius: '4px', padding: '0.6rem', color: 'var(--text-primary)', fontSize: '0.85rem', resize: 'vertical', minHeight: '60px', boxSizing: 'border-box', marginBottom: '0.75rem' }}
+                  />
+                  {actionError && <div role="alert" style={{ color: 'var(--danger)', fontSize: '0.85rem', marginBottom: '0.75rem' }}>{actionError}</div>}
+                  <div style={{ display: 'flex', gap: '0.75rem' }}>
+                    <button
+                      onClick={() => handleRespond('resolve')}
+                      style={{ flex: 1, background: 'rgba(72,187,120,0.15)', border: '1px solid var(--success)', color: 'var(--success)', borderRadius: '4px', padding: '0.6rem', cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+                    >
+                      <CheckCircle size={16} /> Resolve
+                    </button>
+                    {selected.status !== 'Investigating' && (
+                      <button
+                        onClick={() => handleRespond('investigate')}
+                        style={{ flex: 1, background: 'rgba(236,153,75,0.1)', border: '1px solid var(--warning)', color: 'var(--warning)', borderRadius: '4px', padding: '0.6rem', cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
+                      >
+                        <Activity size={16} /> Mark Investigating
+                      </button>
+                    )}
                   </div>
-                ) : (
-                  <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '1rem' }}>No automatic response triggered yet.</div>
-                )}
-
-                {selected.status !== 'Resolved' && (
-                  <>
-                    <textarea
-                      value={analystNote}
-                      onChange={e => setAnalystNote(e.target.value)}
-                      placeholder="Add analyst note (optional)..."
-                      style={{ width: '100%', background: 'rgba(255,255,255,0.04)', border: '1px solid var(--border)', borderRadius: '4px', padding: '0.6rem', color: 'var(--text-primary)', fontSize: '0.85rem', resize: 'vertical', minHeight: '60px', boxSizing: 'border-box', marginBottom: '0.75rem' }}
-                    />
-                    <div style={{ display: 'flex', gap: '0.75rem' }}>
-                      <button
-                        onClick={() => handleRespond('approve')}
-                        style={{ flex: 1, background: 'rgba(72,187,120,0.15)', border: '1px solid var(--success)', color: 'var(--success)', borderRadius: '4px', padding: '0.6rem', cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
-                      >
-                        <CheckCircle size={16} /> Approve & Resolve
-                      </button>
-                      <button
-                        onClick={() => handleRespond('reject')}
-                        style={{ flex: 1, background: 'rgba(229,62,62,0.1)', border: '1px solid var(--danger)', color: '#fc8181', borderRadius: '4px', padding: '0.6rem', cursor: 'pointer', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem' }}
-                      >
-                        <X size={16} /> Reject — Investigate
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
+                </div>
+              )}
 
               {/* Enhanced Remediation Playbook */}
               <div>
@@ -579,8 +461,8 @@ const Incidents = () => {
                                   {step.command}
                                 </code>
                                 <button
-                                  id={`copy-btn-${i}`}
-                                  onClick={() => copyToClipboard(step.command, i)}
+                                  aria-label="Copy command"
+                                  onClick={() => copyCommand(step.command, i)}
                                   style={{
                                     background: 'rgba(255,255,255,0.1)',
                                     border: '1px solid var(--border)',
@@ -598,7 +480,7 @@ const Incidents = () => {
                                     e.target.style.background = 'rgba(255,255,255,0.1)';
                                   }}
                                 >
-                                  <Copy size={14} color="var(--text-secondary)" />
+                                  {copiedStep === i ? <CheckCircle size={14} color="var(--success)" /> : <Copy size={14} color="var(--text-secondary)" />}
                                 </button>
                               </div>
                             )}

@@ -4,6 +4,7 @@
   --bg-primary: #0D1B2A;
   --bg-secondary: #112240;
   --bg-surface: #1B2E4B;
+  --surface: var(--bg-surface); /* opaque panel background used by sticky headers, modals and tooltips */
   --accent-gold: #B8922A;
   --accent-gold-light: #D4A843;
   --text-primary: #F0F4F8;

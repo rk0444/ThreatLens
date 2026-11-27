@@ -80,6 +80,17 @@ export default function Endpoints() {
     if (REFRESH_EVENTS.includes(msg.type)) fetchAssets();
   }, [fetchAssets]));
 
+  // Esc closes the Register pop-up, otherwise the detail drawer
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      if (showModal) setShowModal(false);
+      else setSelected(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [showModal]);
+
   const openDetail = (asset) => {
     setSelected(asset);
     setAssetIncs([]);
@@ -166,7 +177,7 @@ export default function Endpoints() {
           { label:'Total Endpoints',  value: assets.length,                                        color:'var(--accent-gold)' },
           { label:'Online',           value: onlineCount,                                          color:'var(--success)'     },
           { label:'Offline',          value: assets.length - onlineCount,                          color:'var(--danger)'      },
-          { label:'Active Incidents', value: assets.reduce((s,a)=>s+(a.active_incident_count||0),0),color:'var(--warning)'     },
+          { label:'Open Incidents', value: assets.reduce((s,a)=>s+(a.open_incident_count||0),0),color:'var(--warning)'     },
         ].map((s,i) => (
           <div key={i} className="glass-panel" style={{ padding:'1.25rem' }}>
             <div className="label-small">{s.label}</div>
@@ -229,7 +240,7 @@ export default function Endpoints() {
               {/* ROW 2: Active incidents + published exposure (CVEs matching this asset's software) */}
               <div style={{ display:'flex', gap:'8px', padding:'10px 16px' }}>
                 {[
-                  { label:`${asset.active_incident_count||0} Active incident${asset.active_incident_count===1?'':'s'}`, bg: (asset.active_incident_count||0)>0 ? 'rgba(229,62,62,0.15)'  : 'rgba(255,255,255,0.04)', border: (asset.active_incident_count||0)>0 ? 'rgba(229,62,62,0.4)'    : 'rgba(255,255,255,0.08)', color: (asset.active_incident_count||0)>0 ? '#fc8181' : 'var(--text-muted)' },
+                  { label:`${asset.open_incident_count||0} Open incident${asset.open_incident_count===1?'':'s'}`, bg: (asset.open_incident_count||0)>0 ? 'rgba(229,62,62,0.15)'  : 'rgba(255,255,255,0.04)', border: (asset.open_incident_count||0)>0 ? 'rgba(229,62,62,0.4)'    : 'rgba(255,255,255,0.08)', color: (asset.open_incident_count||0)>0 ? '#fc8181' : 'var(--text-muted)' },
                   { label: sw.length === 0 ? 'No software listed' : top ? `${asset.matching_cve_count} CVEs · top ${top.risk_score} ${top.risk_band}` : '0 matching CVEs',
                     bg:'rgba(255,255,255,0.04)', border:'rgba(255,255,255,0.08)', color: top ? getRiskColor(top.risk_score) : 'var(--text-muted)' },
                 ].map((p,i) => (
@@ -294,11 +305,12 @@ export default function Endpoints() {
                   className="close-btn" 
                   onClick={() => handleDelete(selected.id)} 
                   title="Remove Endpoint"
+                  aria-label="Remove endpoint"
                   style={{ color: 'var(--danger)' }}
                 >
                   <Trash2 size={20} />
                 </button>
-                <button className="close-btn" onClick={() => setSelected(null)}>
+                <button className="close-btn" aria-label="Close" onClick={() => setSelected(null)}>
                   <X size={24} />
                 </button>
               </div>
@@ -309,7 +321,7 @@ export default function Endpoints() {
                 <div className="info-item"><span className="label-small">IP</span><div className="value" style={{fontFamily:'JetBrains Mono'}}>{selected.ip_address}</div></div>
                 <div className="info-item"><span className="label-small">Matching CVEs</span><div className="value">{(selected.software_list||[]).length ? selected.matching_cve_count : 'No software listed'}</div></div>
                 <div className="info-item"><span className="label-small">Highest CVE Risk</span><div className="value" style={{color: selected.top_cve ? getRiskColor(selected.top_cve.risk_score) : 'var(--text-muted)'}}>{selected.top_cve ? `${selected.top_cve.risk_score} ${selected.top_cve.risk_band} (${selected.top_cve.cve_id})` : '—'}</div></div>
-                <div className="info-item"><span className="label-small">Active Incidents</span><div className="value">{selected.active_incident_count||0}</div></div>
+                <div className="info-item"><span className="label-small">Open Incidents</span><div className="value">{selected.open_incident_count||0}</div></div>
               </div>
               <div className="asset-section" style={{marginTop:'2rem'}}>
                 <div className="label-small">Installed Software ({(selected.software_list||[]).length})</div>
@@ -349,7 +361,7 @@ export default function Endpoints() {
           <div style={{background:'var(--surface)',border:'1px solid var(--border)',borderRadius:'8px',padding:'2rem',width:'480px',maxWidth:'90vw', overflow:'visible'}} onClick={e=>e.stopPropagation()}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'2rem'}}>
               <h2 style={{margin:0}}>Register Endpoint</h2>
-              <button className="close-btn" onClick={()=>setShowModal(false)}><X/></button>
+              <button className="close-btn" aria-label="Close" onClick={()=>setShowModal(false)}><X/></button>
             </div>
             <div style={{display:'flex',flexDirection:'column',gap:'1.25rem'}}>
               {[{label:'Hostname',key:'name',ph:'e.g. WS-DEV-02'},{label:'IP Address',key:'ip_address',ph:'e.g. 192.168.1.52'},{label:'Software (comma-separated)',key:'software_list',ph:'Chrome, VS Code, Python'}].map(({label,key,ph})=>(

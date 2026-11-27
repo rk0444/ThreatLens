@@ -233,8 +233,8 @@ const Overview = () => {
             delay: 0.1
           },
           { 
-            label: 'Active Incidents', 
-            value: metrics.activeIncidents, 
+            label: 'Open Incidents', 
+            value: metrics.openIncidents, 
             icon: <Shield size={20} />,
             color: '#fc8181',
             delay: 0.2
@@ -304,6 +304,7 @@ const Overview = () => {
           style={{ padding: '1.5rem' }}
         >
           <div className="label-small" style={{ marginBottom: '1rem' }}>Risk Bands of CVEs Published Today</div>
+          {severityBreakdown.some(s => s.value > 0) ? (
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={severityBreakdown}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
@@ -329,6 +330,11 @@ const Overview = () => {
               </Bar>
             </BarChart>
           </ResponsiveContainer>
+          ) : (
+            <div style={{ height: '200px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.9rem' }}>
+              No CVEs published yet today
+            </div>
+          )}
         </motion.div>
 
         {/* Top 5 Critical Threats */}
