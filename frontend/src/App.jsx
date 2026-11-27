@@ -92,7 +92,7 @@ function AppLayout() {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === 'MORNING_BRIEF_GENERATED') {
-          setToast({ title: 'AI Morning Brief', message: 'Your daily intelligence briefing is ready.' });
+          setToast({ title: 'Morning Brief', message: 'GPT-4o brief is ready.' });
           setTimeout(() => setToast(null), 5000);
         } else if (msg.type === 'NEW_INCIDENT' && msg.data.severity === 'Critical') {
           setCriticalAlert(msg.data);

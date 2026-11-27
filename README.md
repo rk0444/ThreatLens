@@ -21,7 +21,7 @@ A unified cybersecurity platform that simultaneously monitors the entire interne
 - **Desktop App**: Electron wrapper for cross-platform desktop deployment
 - **Database**: SQLite with SQLAlchemy ORM + ChromaDB vector database
 - **Real-time Communication**: WebSocket support for live updates
-- **Security Agents**: Network monitor, process monitor, sandbox, and automated responder
+- **Security Agents**: Network monitor, process monitor, and sandbox
 
 ## 📦 Installation
 
@@ -132,7 +132,6 @@ ThreatLens/
 ├── agent/              # Security monitoring agents
 │   ├── network_monitor.py   # Network traffic monitoring
 │   ├── process_monitor.py   # Process activity monitoring
-│   ├── responder.py          # Automated threat response
 │   └── sandbox.py           # Isolated execution environment
 ├── backend/            # FastAPI backend application
 │   ├── database/      # Database models and schemas
@@ -155,14 +154,7 @@ ThreatLens/
 ### Running Tests
 
 ```bash
-# Test all APIs
-python test_all_apis.py
-
-# Test specific endpoints
-python test_single_endpoint.py
-
-# Test lifespan functionality
-python test_lifespan.py
+.venv\Scripts\python backend\tests\test_scoring.py
 ```
 
 ### Building for Production

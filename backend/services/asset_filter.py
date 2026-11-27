@@ -45,13 +45,6 @@ def _match_assets(cve: models.CVE, assets) -> None:
     rescore_cve(cve)
 
 
-def cross_reference_cve_with_assets(db_session: Session, cve: models.CVE):
-    """Match one CVE against all registered assets (used by the NVD sync)."""
-    _match_assets(cve, db_session.query(models.Asset).all())
-    db_session.commit()
-    return cve.asset_affected
-
-
 def rematch_all_cves(db_session: Session) -> int:
     """Re-match every stored CVE after the asset inventory changes. Returns affected count."""
     assets = db_session.query(models.Asset).all()

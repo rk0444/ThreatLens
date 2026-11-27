@@ -131,7 +131,6 @@ def run_migration(db_path, dry_run=False):
         print("\n[DRY RUN] No changes were written. Re-run without --dry-run to apply.")
     else:
         print("\n[DONE] Migration complete. Restart your FastAPI backend now.")
-        print("       Verify with:  python check_schema.py")
 
 
 # ── Post-migration: backfill risk scores for existing rows ────────────────────

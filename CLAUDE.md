@@ -6,10 +6,10 @@ Desktop cybersecurity platform: FastAPI + SQLite backend, React (Vite) frontend,
 
 - `backend/main.py` — the whole API. All routes (~44) are defined inline here, plus the `lifespan` that starts APScheduler jobs: NVD sync (15 min), OSINT (30 min), CISA KEV (6 h), MITRE (7 d). WebSocket at `/ws/events`.
 - `backend/database/` — `db.py` (engine, `get_db`, SQLite pragmas; DB file `threatlens.sqlite`), `models.py` (SQLAlchemy), `schemas.py` (Pydantic), `mitre_attack.json`.
-- `backend/services/` — one module per integration: `nvd`, `cisa_kev`, `epss`, `mitre_attack`, `osint`, `abuseipdb`, `virustotal`, `scoring`, `morning_brief`, `remediation`, `ai_enrichment`, `agents` (LangGraph), `vector_store` (Chroma), `asset_filter`.
-- `agent/` — endpoint agent scripts (process/network monitors, responder, sandbox).
-- `frontend/src/` — `App.jsx` (routes), `pages/` (Overview, GlobalThreats, ThreatActors, Endpoints, Incidents, Settings, Onboarding, AICopilot, AttackMap, IOCHunter), `components/` and `components/overview/`, `hooks/useWebSocket.js`, `utils/riskScore.js`.
-- Root: `main.js` / `preload.js` (Electron), `package.json` (Electron scripts + electron-builder config), `migrate.py`, assorted one-off `check_*.py` / `test_*.py` scripts.
+- `backend/services/` — one module per integration: `nvd`, `cisa_kev`, `epss`, `mitre_attack`, `osint`, `abuseipdb`, `virustotal`, `scoring`, `asset_filter`.
+- `agent/` — endpoint agent scripts (process/network monitors, sandbox).
+- `frontend/src/` — `App.jsx` (routes), `pages/` (Overview, GlobalThreats, ThreatActors, Endpoints, Incidents, Settings, Onboarding, AICopilot, AttackMap, IOCHunter), `components/`, `hooks/useWebSocket.js`, `utils/riskScore.js`.
+- Root: `main.js` / `preload.js` (Electron), `package.json` (Electron scripts + electron-builder config), `migrate.py`.
 - Config: copy `.env.example` to `.env`.
 
 ## Running

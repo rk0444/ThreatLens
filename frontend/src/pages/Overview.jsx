@@ -14,6 +14,7 @@ const Overview = () => {
   const [activityLog, setActivityLog] = useState([]);
   const [topThreats, setTopThreats] = useState([]);
   const [morningBrief, setMorningBrief] = useState(null);
+  const [briefStatus, setBriefStatus] = useState(null); // null | 'generating' | error text
   const [loading, setLoading] = useState(true);
   const [animateNumbers, setAnimateNumbers] = useState(false);
   const wsRef = useRef(null);
@@ -116,6 +117,19 @@ const Overview = () => {
       clearTimeout(timer);
     };
   }, []);
+
+  const generateBrief = async () => {
+    setBriefStatus('generating');
+    try {
+      const res = await fetch('http://127.0.0.1:8000/api/morning-brief/generate', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
+      setMorningBrief({ content: data.content, date: data.date });
+      setBriefStatus(null);
+    } catch (e) {
+      setBriefStatus(e.message);
+    }
+  };
 
   const fetchOverviewData = () => {
     setLoading(true);
@@ -506,20 +520,25 @@ const Overview = () => {
         >
           <div className="label-small" style={{ marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Brain size={14} color="var(--accent-gold)" />
-            AI Morning Brief
+            Morning Brief (GPT-4o)
             <span style={{
               marginLeft: 'auto',
               fontSize: '0.7rem',
               padding: '0.2rem 0.5rem',
               borderRadius: '10px',
-              background: morningBrief ? 'rgba(72, 187, 120, 0.2)' : 'rgba(255,255,255,0.05)',
-              color: morningBrief ? 'var(--success)' : 'var(--text-muted)'
+              background: morningBrief?.content ? 'rgba(72, 187, 120, 0.2)' : 'rgba(255,255,255,0.05)',
+              color: morningBrief?.content ? 'var(--success)' : 'var(--text-muted)'
             }}>
-              {morningBrief ? 'Ready' : 'Generating...'}
+              {briefStatus === 'generating' ? 'Generating...' : morningBrief?.content ? 'Ready' : 'None yet'}
             </span>
           </div>
           
-          {morningBrief ? (
+          {briefStatus && briefStatus !== 'generating' && (
+            <div style={{ color: 'var(--danger)', fontSize: '0.8rem', marginBottom: '0.75rem' }}>
+              Could not generate brief: {briefStatus}
+            </div>
+          )}
+          {morningBrief?.content ? (
             <div style={{
               background: 'linear-gradient(135deg, rgba(184, 146, 42, 0.1), rgba(245, 158, 11, 0.05))',
               border: '1px solid var(--accent-gold)',
@@ -551,10 +570,8 @@ const Overview = () => {
               }}>
                 <span>Generated: {new Date(morningBrief.date).toLocaleDateString()}</span>
                 <button
-                  onClick={() => {
-                    // Navigate to full brief
-                    window.location.href = '/morning-brief';
-                  }}
+                  onClick={generateBrief}
+                  disabled={briefStatus === 'generating'}
                   style={{
                     background: 'rgba(255,255,255,0.1)',
                     border: '1px solid var(--border)',
@@ -568,7 +585,7 @@ const Overview = () => {
                     gap: '0.25rem'
                   }}
                 >
-                  Read More <ChevronRight size={12} />
+                  {briefStatus === 'generating' ? 'Generating...' : 'Regenerate'} <ChevronRight size={12} />
                 </button>
               </div>
             </div>
@@ -579,16 +596,10 @@ const Overview = () => {
               fontSize: '0.9rem',
               padding: '2rem 0'
             }}>
-              <div style={{ marginBottom: '1rem' }}>AI Morning Brief</div>
-              <div>Generating at 08:00 UTC...</div>
-              <div style={{ 
-                width: '40px', 
-                height: '2px', 
-                background: 'var(--border)', 
-                margin: '1rem auto',
-                borderRadius: '1px'
-              }}></div>
-              <div style={{ fontSize: '0.8rem' }}>Check back after 08:00 UTC for today's security briefing</div>
+              <div style={{ marginBottom: '1rem' }}>No brief yet</div>
+              <button className="gold-button" onClick={generateBrief} disabled={briefStatus === 'generating'}>
+                {briefStatus === 'generating' ? 'Generating...' : 'Generate with GPT-4o'}
+              </button>
             </div>
           )}
         </motion.div>

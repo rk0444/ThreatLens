@@ -1,12 +1,12 @@
 import json
 import requests
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from backend.database import models
 from backend.services.epss import fetch_epss_bulk
-from backend.services.asset_filter import cross_reference_cve_with_assets
-from backend.services.scoring import rescore_cve
+from backend.services.asset_filter import _match_assets
 import os
 from dotenv import load_dotenv
 
@@ -44,6 +44,24 @@ def evidence_flags(cve_data: dict, cisa_kev=False, kev_ransomware=False):
     return exploited, ransomware, patch_available
 
 
+def _fetch_window(params: dict, headers: dict) -> list:
+    """Every CVE in the window: NVD pages at most 2000 results, so walk startIndex to totalResults."""
+    vulnerabilities, start = [], 0
+    while True:
+        response = requests.get(NVD_API_URL, params={**params, "startIndex": start},
+                                headers=headers, timeout=60)
+        if response.status_code != 200:
+            raise RuntimeError(f"NVD API returned status {response.status_code} at startIndex {start}")
+        page = response.json()
+        batch = page.get("vulnerabilities", [])
+        vulnerabilities.extend(batch)
+        start += len(batch)
+        if not batch or start >= page.get("totalResults", 0):
+            return vulnerabilities
+        # NVD rate limit: 5 requests / 30 s without a key, 50 with one
+        time.sleep(0.6 if NVD_API_KEY else 6)
+
+
 def fetch_latest_cves(db_session: Session, notify=None):
     _log_scheduler("started")
     ingested = 0
@@ -61,12 +79,7 @@ def fetch_latest_cves(db_session: Session, notify=None):
 
     try:
         print("[nvd] Fetching CVEs from NVD...")
-        response = requests.get(NVD_API_URL, params=params, headers=headers, timeout=30)
-        if response.status_code != 200:
-            _log_scheduler("error", f"NVD API returned status {response.status_code}")
-            return
-
-        vulnerabilities = response.json().get("vulnerabilities", [])
+        vulnerabilities = _fetch_window(params, headers)
         print(f"[nvd] Got {len(vulnerabilities)} CVEs. Fetching EPSS scores in bulk...")
 
         cve_ids = [
@@ -76,6 +89,10 @@ def fetch_latest_cves(db_session: Session, notify=None):
         ]
         epss_map = fetch_epss_bulk(cve_ids)
         print(f"[nvd] EPSS scores fetched for {len(epss_map)} CVEs. Processing...")
+
+        # one query each instead of one per CVE
+        existing_map = {c.cve_id: c for c in db_session.query(models.CVE).filter(models.CVE.cve_id.in_(cve_ids))}
+        assets = db_session.query(models.Asset).all()
 
         for v in vulnerabilities:
             cve_data = v.get("cve", {})
@@ -93,7 +110,7 @@ def fetch_latest_cves(db_session: Session, notify=None):
             epss_score = epss_data.get("epss")
             epss_percentile = epss_data.get("percentile")
 
-            existing = db_session.query(models.CVE).filter_by(cve_id=cve_id).first()
+            existing = existing_map.get(cve_id)
             if existing:
                 existing.cvss_score         = cvss_score
                 existing.epss_score         = epss_score
@@ -101,9 +118,7 @@ def fetch_latest_cves(db_session: Session, notify=None):
                 existing.raw_json           = cve_data
                 (existing.actively_exploited, existing.ransomware_use,
                  existing.patch_available) = evidence_flags(cve_data, existing.cisa_kev, existing.ransomware_use)
-                db_session.commit()
-                cross_reference_cve_with_assets(db_session, existing)
-                db_session.commit()
+                _match_assets(existing, assets)  # also rescores
                 updated += 1
             else:
                 actively_exploited, ransomware_use, patch_available = evidence_flags(cve_data)
@@ -119,13 +134,11 @@ def fetch_latest_cves(db_session: Session, notify=None):
                     patch_available=patch_available,
                     raw_json=cve_data,
                 )
-                rescore_cve(new_cve)  # risk_band is NOT NULL; asset matching below rescores again
+                _match_assets(new_cve, assets)  # sets risk_band (NOT NULL)
                 db_session.add(new_cve)
-                db_session.commit()
-                db_session.refresh(new_cve)
-                cross_reference_cve_with_assets(db_session, new_cve)
-                db_session.commit()
+                existing_map[cve_id] = new_cve  # NVD can repeat an ID across pages
                 ingested += 1
+        db_session.commit()
 
         _log_scheduler("success", f"Ingested {ingested} new, updated {updated} existing CVEs")
         if notify and ingested:
@@ -137,6 +150,7 @@ def fetch_latest_cves(db_session: Session, notify=None):
         err = f"{str(e)}\n{traceback.format_exc()}"
         _log_scheduler("error", err)
         print(f"[nvd] Error: {err}")
+        raise
 
 
 def run_nvd_sync(notify=None):
@@ -145,7 +159,5 @@ def run_nvd_sync(notify=None):
     session = SessionLocal()
     try:
         fetch_latest_cves(session, notify)
-    except Exception as e:
-        print(f"[nvd_sync] failed: {e}")
     finally:
         session.close()

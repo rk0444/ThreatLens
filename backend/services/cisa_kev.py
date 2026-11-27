@@ -19,11 +19,12 @@ def sync_cisa_kev(db: Session):
     vulnerabilities = data.get("vulnerabilities", [])
     print(f"[INIT] Fetched {len(vulnerabilities)} exploited vulnerabilities from CISA.")
     
+    kev_map = {k.cve_id: k for k in db.query(models.CisaKev)}  # one query, not one per entry
     for v in vulnerabilities:
         cve_id = v.get("cveID")
         ransomware_use = str(v.get("knownRansomwareCampaignUse", "")).lower() == "known"
         
-        db_kev = db.query(models.CisaKev).filter(models.CisaKev.cve_id == cve_id).first()
+        db_kev = kev_map.get(cve_id)
         if not db_kev:
             db_kev = models.CisaKev(
                 cve_id=cve_id,
@@ -36,6 +37,7 @@ def sync_cisa_kev(db: Session):
                 ransomware_use=ransomware_use
             )
             db.add(db_kev)
+            kev_map[cve_id] = db_kev
         else:
             db_kev.ransomware_use = ransomware_use
             
@@ -44,7 +46,7 @@ def sync_cisa_kev(db: Session):
     print("[INIT] Cross-referencing CISA KEV with local CVEs...")
     local_cves = db.query(models.CVE).all()
     for cve in local_cves:
-        kev = db.query(models.CisaKev).filter(models.CisaKev.cve_id == cve.cve_id).first()
+        kev = kev_map.get(cve.cve_id)
         if kev:
             # Set both flags correctly
             cve.cisa_kev = True
