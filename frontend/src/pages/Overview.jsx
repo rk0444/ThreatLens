@@ -9,7 +9,7 @@ import { getRiskColor, getBandColor } from '../utils/riskScore';
 const API = 'http://127.0.0.1:8000';
 
 // Server events after which the overview numbers may have changed
-const REFRESH_EVENTS = ['CVES_UPDATED', 'NEW_INCIDENT', 'INCIDENT_UPDATE', 'MORNING_BRIEF_GENERATED'];
+const REFRESH_EVENTS = ['CVES_UPDATED', 'NEW_INCIDENT', 'INCIDENT_UPDATE', 'MORNING_BRIEF_GENERATED', 'ASSET_ADDED', 'ASSET_DELETED'];
 
 // Counts from the previous value to the new one (from 0 on first show).
 // Defined outside Overview so a re-render of the page doesn't restart it.
@@ -39,6 +39,14 @@ const Overview = () => {
   const [briefStatus, setBriefStatus] = useState(null); // null | 'generating' | error text
   const [loading, setLoading] = useState(true);
   const [selectedCve, setSelectedCve] = useState(null);
+  const [threatError, setThreatError] = useState(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  // Keep "x m ago" labels current while the page stays open
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 60000);
+    return () => clearInterval(t);
+  }, []);
 
   const fetchOverviewData = useCallback(() => {
     fetch(`${API}/api/overview`)
@@ -52,6 +60,13 @@ const Overview = () => {
   }, []);
 
   useEffect(() => { fetchOverviewData(); }, [fetchOverviewData]);
+
+  // Nothing loaded yet (e.g. backend still starting): keep trying until it answers
+  useEffect(() => {
+    if (overview || !error) return;
+    const t = setInterval(fetchOverviewData, 5000);
+    return () => clearInterval(t);
+  }, [overview, error, fetchOverviewData]);
 
   useWebSocket(useCallback(msg => {
     if (REFRESH_EVENTS.includes(msg.type)) fetchOverviewData();
@@ -71,13 +86,14 @@ const Overview = () => {
   };
 
   const openThreat = (cveId) => {
+    setThreatError(null);
     fetch(`${API}/api/cves/${encodeURIComponent(cveId)}`)
       .then(res => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
       .then(setSelectedCve)
-      .catch(e => setError(`Could not load ${cveId} (${e.message}).`));
+      .catch(e => setThreatError(`Could not load ${cveId} (${e.message}).`));
   };
 
   const { metrics, severityBreakdown = [], activityLog = [], topThreats = [], morningBrief } = overview || {};
@@ -93,7 +109,7 @@ const Overview = () => {
   };
 
   const formatTimeAgo = (timestamp) => {
-    const diff = Date.now() - new Date(timestamp).getTime();
+    const diff = now - new Date(timestamp).getTime();
     const mins = Math.floor(diff / 60000);
     if (mins < 1) return 'Just now';
     if (mins < 60) return `${mins}m ago`;
@@ -127,7 +143,12 @@ const Overview = () => {
 
   // Never show zeros as if they were real numbers when nothing has loaded
   if (!overview) {
-    return <div className="page-container" style={{ padding: '24px' }}>{errorBanner}</div>;
+    return (
+      <div className="page-container" style={{ padding: '24px' }}>
+        {errorBanner}
+        <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Retrying every 5 seconds…</div>
+      </div>
+    );
   }
 
   return (
@@ -319,6 +340,9 @@ const Overview = () => {
           style={{ padding: '1.5rem' }}
         >
           <div className="label-small" style={{ marginBottom: '1rem' }}>Top 5 by Risk Score (All Time)</div>
+          {threatError && (
+            <div role="alert" style={{ color: 'var(--danger)', fontSize: '0.8rem', marginBottom: '0.75rem' }}>{threatError}</div>
+          )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
             {topThreats.map((threat, index) => (
               <div
