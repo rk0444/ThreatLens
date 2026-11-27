@@ -65,3 +65,6 @@ Thumbs.db
 
 # MaxMind GeoLite2 database (licensed, downloaded per machine)
 *.mmdb
+
+# MITRE ATT&CK STIX bundle (~50 MB, re-downloaded weekly by the MITRE sync)
+backend/database/mitre_attack.json

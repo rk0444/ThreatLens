@@ -70,7 +70,7 @@
 10. **Threat Intelligence** (3/3)
     - `GET /api/threat-actors` - List all threat actors
     - `GET /api/threat-actors/{id}` - Actor details
-    - `GET /api/cves/{id}/threat-actors` - CVE threat actors
+    - ~~`GET /api/cves/{id}/threat-actors`~~ - removed 2026-11-27: no published source links CVEs to groups
 
 11. **WebSocket** (Available)
     - `WS /ws/events` - Real-time event streaming
