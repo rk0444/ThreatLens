@@ -25,7 +25,6 @@ const AttackMap = () => {
   const [leafletReady, setLeafletReady] = useState(false);
   const [loading, setLoading]       = useState(true);
   const [error, setError]           = useState(null);
-  const [activeTab, setActiveTab]   = useState('actors');
   const [filter, setFilter]         = useState('all');
 
   // Load Leaflet from CDN
@@ -123,7 +122,6 @@ const AttackMap = () => {
         .on('click', e => {
           e.originalEvent.stopPropagation();
           setSelected(node);
-          setActiveTab('actors');
         });
       markersRef.current.push(marker);
     });
@@ -259,7 +257,6 @@ const AttackMap = () => {
             <div style={{ display: 'flex', gap: '18px', marginTop: '12px' }}>
               {[
                 { label: 'Actors', value: selected.actor_count },
-                { label: 'CVEs',   value: selected.cve_count },
                 { label: 'OSINT',  value: selected.osint_count },
               ].map(({ label, value }) => (
                 <div key={label}>
@@ -284,24 +281,9 @@ const AttackMap = () => {
             )}
           </div>
 
-          {/* Tabs */}
-          <div style={{ display: 'flex', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
-            {['actors', 'cves'].map(tab => (
-              <button key={tab} onClick={() => setActiveTab(tab)} style={{
-                flex: 1, padding: '8px', background: activeTab === tab ? 'rgba(255,255,255,0.04)' : 'none',
-                border: 'none',
-                borderBottom: activeTab === tab ? '2px solid #818cf8' : '2px solid transparent',
-                color: activeTab === tab ? '#f1f5f9' : '#475569',
-                fontSize: '0.7rem', fontFamily: 'JetBrains Mono, monospace',
-                letterSpacing: '0.08em', cursor: 'pointer', textTransform: 'uppercase',
-                transition: 'all 0.15s',
-              }}>{tab}</button>
-            ))}
-          </div>
-
           {/* Content */}
           <div style={{ flex: 1, overflow: 'auto', padding: '12px' }}>
-            {activeTab === 'actors' && selected.actors?.map((actor, i) => (
+            {selected.actors?.map((actor, i) => (
               <div key={i} style={{
                 padding: '10px 12px', marginBottom: '8px',
                 background: 'rgba(255,255,255,0.03)',
@@ -319,7 +301,6 @@ const AttackMap = () => {
                     color: MOTIVATION_COLOR[actor.motivation] || '#64748b',
                     border: `1px solid ${MOTIVATION_COLOR[actor.motivation] || '#64748b'}33`,
                   }}>{actor.motivation}</span>
-                  <span style={{ fontSize: '0.6rem', color: '#64748b' }}>{actor.cve_count} CVEs</span>
                   {actor.incident_hits > 0 && (
                     <span style={{ fontSize: '0.6rem', color: '#ef4444' }}>⚠ {actor.incident_hits} incident{actor.incident_hits > 1 ? 's' : ''}</span>
                   )}
@@ -341,23 +322,6 @@ const AttackMap = () => {
               </div>
             ))}
 
-            {activeTab === 'cves' && (
-              <div>
-                {selected.top_cves?.length > 0
-                  ? selected.top_cves.map((cve, i) => (
-                    <div key={i} style={{
-                      padding: '8px 12px', marginBottom: '6px',
-                      background: 'rgba(255,255,255,0.03)',
-                      border: '1px solid rgba(255,255,255,0.06)',
-                      borderRadius: '6px',
-                      fontFamily: 'JetBrains Mono, monospace',
-                      fontSize: '0.75rem', color: '#94a3b8',
-                    }}>{cve}</div>
-                  ))
-                  : <div style={{ color: '#475569', fontSize: '0.8rem', padding: '12px' }}>No CVEs linked to this country.</div>
-                }
-              </div>
-            )}
           </div>
         </div>
       )}

@@ -40,17 +40,17 @@ const ThreatGraph = ({ highlightedNodeId }) => {
 
   return (
     <div className="glass-panel" style={{ height: '500px', overflow: 'hidden', position: 'relative' }} ref={containerRef}>
-      <div className="label-small" style={{ position: 'absolute', top: '15px', left: '15px', zIndex: 10 }}>Threat Intelligence Graph</div>
+      <div className="label-small" style={{ position: 'absolute', top: '15px', left: '15px', zIndex: 10 }}>Threat Intelligence Graph · top 20 CVEs by risk → weakness type (CWE, from NVD)</div>
       {loading ? (
         <div className="skeleton" style={{ height: '100%', width: '100%' }}></div>
       ) : (
         <ForceGraph2D
           ref={fgRef}
           graphData={data}
-          nodeLabel="id"
+          nodeLabel={(node) => node.label || node.id}
           nodeAutoColorBy="type"
           nodeCanvasObject={(node, ctx, globalScale) => {
-            const label = node.id;
+            const label = node.label || node.id;
             const fontSize = 12 / globalScale;
             ctx.font = `${fontSize}px DM Sans`;
             const textWidth = ctx.measureText(label).width;
@@ -61,7 +61,7 @@ const ThreatGraph = ({ highlightedNodeId }) => {
 
             ctx.fillStyle = isDimmed ? 'rgba(13, 27, 42, 0.2)' : 'rgba(13, 27, 42, 0.8)';
             if (isHighlighted) {
-                ctx.strokeStyle = 'var(--accent-gold)';
+                ctx.strokeStyle = '#B8922A'; // --accent-gold; canvas can't resolve CSS variables
                 ctx.lineWidth = 2 / globalScale;
                 ctx.strokeRect(node.x - bckgDimensions[0] / 2, node.y - bckgDimensions[1] / 2, ...bckgDimensions);
             }
@@ -72,8 +72,7 @@ const ThreatGraph = ({ highlightedNodeId }) => {
             ctx.fillStyle = isDimmed ? 'rgba(255, 255, 255, 0.1)' : node.color;
             ctx.fillText(label, node.x, node.y);
           }}
-          linkColor={() => 'var(--border)'}
-          backgroundColor="transparent"
+          linkColor={() => 'rgba(184, 146, 42, 0.35)'}          backgroundColor="transparent"
           width={containerRef.current?.offsetWidth || 800}
           height={500}
         />

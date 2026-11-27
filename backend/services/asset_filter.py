@@ -1,19 +1,44 @@
+import re
 from sqlalchemy.orm import Session
 from backend.database import models
 from backend.services.scoring import rescore_cve
 
 
-def _match_assets(cve: models.CVE, assets) -> None:
-    """Store which assets a CVE affects and recompute its risk score.
+def cpe_products(cve: models.CVE) -> set:
+    """(vendor, product) pairs NVD lists as vulnerable for this CVE (empty until NVD analyses it)."""
+    configs = (cve.raw_json or {}).get("configurations", [])
+    pairs = set()
+    for config in configs:
+        for node in config.get("nodes", []):
+            for match in node.get("cpeMatch", []):
+                parts = match.get("criteria", "").split(":")
+                if match.get("vulnerable") and len(parts) > 4:
+                    pairs.add((parts[3], parts[4]))
+    return pairs
 
-    In a real app this would use CPE matches; here any asset software name
-    that appears in the CVE description counts as a match.
+
+def _normalize(software: str) -> str:
+    # "Python 3.10" -> "python", "Google Chrome" -> "google_chrome"
+    words = [w for w in re.split(r"[\s_]+", software.lower()) if w and not any(c.isdigit() for c in w)]
+    return "_".join(words)
+
+
+def matched_software(cve: models.CVE, software_list) -> list:
+    """Asset software entries that name a vulnerable CPE product of this CVE.
+
+    shortcut: matches vendor/product names only and ignores CPE version ranges,
+    upgrade when assets report installed versions in a structured form.
     """
-    description_lower = (cve.description or "").lower()
-    affected_count = sum(
-        1 for asset in assets
-        if any(software.lower() in description_lower for software in (asset.software_list or []))
-    )
+    products = cpe_products(cve)
+    if not products:
+        return []
+    names = {p for _, p in products} | {f"{v}_{p}" for v, p in products}
+    return [s for s in (software_list or []) if _normalize(s) in names]
+
+
+def _match_assets(cve: models.CVE, assets) -> None:
+    """Store which assets a CVE affects (by NVD CPE data) and recompute its risk score."""
+    affected_count = sum(1 for asset in assets if matched_software(cve, asset.software_list))
     cve.asset_affected = affected_count > 0
     cve.affected_asset_count = affected_count
     rescore_cve(cve)

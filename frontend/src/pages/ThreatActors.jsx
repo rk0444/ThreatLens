@@ -315,12 +315,7 @@ const ThreatActors = () => {
           ) : filteredActors.map(actor => {
             const { flag, name: countryName } = getCountryInfo(actor.country);
             const motStyle = getMotivationStyle(actor.motivation);
-            const hasCves  = actor.cve_count > 0;
-            const techName = actor.latest_technique
-              ? actor.latest_technique.length > 20
-                ? actor.latest_technique.slice(0, 19) + '…'
-                : actor.latest_technique
-              : null;
+            const techCount = actor.techniques?.length ?? 0;
 
             return (
               <div
@@ -379,32 +374,23 @@ const ThreatActors = () => {
                 {/* ── ROW 2: Stats ── */}
                 <div style={{ display: 'flex', padding: '12px 16px', gap: '1rem', flex: 1 }}>
                   <div style={{ flex: '0 0 40%' }}>
-                    <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>Linked CVEs</div>
+                    <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>ATT&amp;CK Techniques</div>
                     <div style={{
                       fontSize: '1.5rem',
                       fontWeight: 700,
                       fontFamily: 'DM Serif Display',
-                      color: hasCves ? 'var(--accent-gold)' : 'var(--text-muted)',
+                      color: techCount > 0 ? 'var(--accent-gold)' : 'var(--text-muted)',
                       lineHeight: 1,
                     }}>
-                      {actor.cve_count ?? 0}
+                      {techCount}
                     </div>
                   </div>
                   <div style={{ width: '1px', background: 'rgba(184,146,42,0.15)', alignSelf: 'stretch' }} />
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>Latest Technique</div>
-                    {techName ? (
-                      <>
-                        <div style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                          {techName}
-                        </div>
-                        <div style={{ fontFamily: 'JetBrains Mono', fontSize: '0.75rem', color: 'var(--accent-gold)', marginTop: '2px' }}>
-                          {actor.latest_technique_id}
-                        </div>
-                      </>
-                    ) : (
-                      <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Not mapped</div>
-                    )}
+                    <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '4px' }}>Last Seen (MITRE)</div>
+                    <div style={{ fontSize: '0.85rem', color: actor.last_seen ? 'var(--text-primary)' : 'var(--text-muted)', fontWeight: 600 }}>
+                      {actor.last_seen ? String(actor.last_seen).slice(0, 10) : 'Unknown'}
+                    </div>
                   </div>
                 </div>
 

@@ -71,8 +71,9 @@ def calculate_risk_score(
     # 7. Threat Component (ransomware association) × 0.05
     threat_component = 100 * 0.05 if ransomware_use else 0
 
-    # 8. Patch Component (no patch = higher risk) × 0.05
-    patch_component = 100 * 0.05 if patch_available is False else 0
+    # 8. Patch Component: dropped. Sources only show that a patch exists, never that
+    #    none does, so "no patch" can't be scored from evidence. Kept at 0 for the breakdown shape.
+    patch_component = 0
 
     # 9. Temporal Component (recency) × 0.05
     temporal_component = 0.0

@@ -27,7 +27,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from backend.database import db, models, schemas
 from backend.services.nvd import fetch_latest_cves
-from backend.services.asset_filter import rematch_all_cves
+from backend.services.asset_filter import rematch_all_cves, matched_software
 from backend.services.osint import fetch_osint_alerts
 from backend.services.abuseipdb import check_ip_reputation
 # from services.agents import get_pipeline
@@ -72,56 +72,6 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # Seed mock data logic
-def seed_data(db_session: Session):
-    if db_session.query(models.Asset).count() == 0:
-        mock_asset = models.Asset(
-            name="WS-PROD-01",
-            os="Windows 11 Pro",
-            software_list=["Chrome", "Slack", "VS Code", "Python 3.10"],
-            ip_address="192.168.1.45",
-            status="Online",
-        )
-        db_session.add(mock_asset)
-        db_session.commit()
-
-        mock_incident = models.Incident(
-            machine_id=1,
-            type="Suspicious Process",
-            severity="High",
-            process_name="powershell.exe",
-            file_path="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-            status="Active",
-            ai_summary="Detected encoded powershell command executing from a temp directory.",
-            timeline=[
-                {"time": "10:00", "event": "Process started"},
-                {"time": "10:05", "event": "Network connection established"},
-            ],
-        )
-        db_session.add(mock_incident)
-        db_session.commit()
-
-        mock_cve = models.CVE(
-            cve_id="CVE-2024-1234",
-            description="Remote Code Execution in widely used library.",
-            cvss_score=9.8,
-            epss_score=0.95,
-            published_date=datetime.now(timezone.utc) - timedelta(days=2),
-        )
-        db_session.add(mock_cve)
-        db_session.commit()
-
-        mock_brief = models.MorningBrief(
-            date=datetime.now(timezone.utc),
-            content="Today's security posture is stable but requires attention on new RCE vulnerabilities.",
-            top_threats=[{"name": "CVE-2024-1234", "risk": "Critical"}],
-            active_incidents=[{"id": 1, "type": "Suspicious Process"}],
-            patterns="Multiple attempts to run encoded powershell detected across network.",
-            actions=[{"task": "Patch CVE-2024-1234", "priority": "High"}],
-        )
-        db_session.add(mock_brief)
-        db_session.commit()
-
-
 # Scheduler reliability helpers
 def safe_run_job(job_func, job_name):
     import inspect
@@ -171,8 +121,6 @@ async def lifespan(app: FastAPI):
         sync_cisa_kev(db_session)
         print("[STARTUP] 3/4 CISA KEV sync complete.")
         
-        # seed_data(db_session)
-        # print("[STARTUP] 4/4 Seed data applied.")
     finally:
         db_session.close()
     
@@ -396,37 +344,24 @@ async def get_mitre_breakdown(db: Session = Depends(db.get_db)):
             for k, v in stage_map.items():
                 if k in tag.lower():
                     counts[v] += 1
-    techniques = db.query(models.MitreTechnique).all()
-    for tech in techniques:
-        tactic = (tech.tactic or "").lower().replace(" ", "-")
-        for k, v in stage_map.items():
-            if k in tactic:
-                counts[v] += 1
-    return [{"stage": k, "count": v} for k, v in counts.items() if v > 0] or \
-           [{"stage": s, "count": max(1, i*3)} for i, s in enumerate(list(stage_map.values())[:5], 1)]
+    return [{"stage": k, "count": v} for k, v in counts.items() if v > 0]
 
 
 @app.get("/api/stats/geo-threats")
 async def get_geo_threats(db: Session = Depends(db.get_db)):
-    COUNTRY_COORDS = {
-        "Russia": (55.75, 37.61), "China": (39.91, 116.39),
-        "United States": (38.90, -77.04), "North Korea": (39.02, 125.75),
-        "Iran": (35.69, 51.42), "Ukraine": (50.45, 30.52),
-        "Belarus": (53.90, 27.57), "Vietnam": (21.02, 105.83),
-        "India": (28.61, 77.21), "Pakistan": (33.72, 73.06),
-        "Brazil": (-15.78, -47.93), "Nigeria": (9.07, 7.40),
-    }
-    alerts = db.query(models.OSINTAlert).all()
+    # Countries come only from the OSINT feed's own targeted_countries field.
     from collections import defaultdict
     geo = defaultdict(lambda: {"count": 0, "latest": ""})
-    for alert in alerts:
-        for country, coords in COUNTRY_COORDS.items():
-            if country.lower() in alert.description.lower() or country.lower() in alert.indicator.lower():
+    for alert in db.query(models.OSINTAlert).order_by(models.OSINTAlert.created_at).all():
+        for country in alert.targeted_countries or []:
+            if country in COUNTRY_COORDS:
                 geo[country]["count"] += 1
-                geo[country]["latest"] = alert.source
-                geo[country]["lat"] = coords[0]
-                geo[country]["lng"] = coords[1]
-    return [{"country": k, "lat": v["lat"], "lng": v["lng"], "count": v["count"], "latest_campaign": v["latest"]} for k, v in geo.items()]
+                geo[country]["latest"] = alert.indicator
+    return [
+        {"country": k, "lat": COUNTRY_COORDS[k]["lat"], "lng": COUNTRY_COORDS[k]["lng"],
+         "count": v["count"], "latest_campaign": v["latest"]}
+        for k, v in geo.items()
+    ]
 
 
 @app.post("/api/morning-brief/generate")
@@ -492,54 +427,34 @@ async def get_cves(
 
 @app.get("/api/cves/graph")
 async def get_threat_graph(db: Session = Depends(db.get_db)):
-    # Top 20 CVEs by cvss_score (risk_score is null on most real data)
+    # Top 20 CVEs by risk, linked to the weakness types (CWE) NVD publishes for them.
     cves = (
         db.query(models.CVE)
-        .order_by(models.CVE.cvss_score.desc().nullslast())
+        .order_by(models.CVE.risk_score.desc().nullslast())
         .limit(20)
         .all()
     )
-
-    nodes = []
-    links = []
-    actor_nodes_added = set()
-
+    nodes, links, cwe_nodes_added = [], [], set()
     for cve in cves:
         nodes.append({
             "id": cve.cve_id,
             "type": "cve",
             "val": round(cve.cvss_score or 5, 1),
             "cvss": cve.cvss_score,
+            "risk": cve.risk_score,
             "kev": cve.cisa_kev,
         })
-
-        # Real MITRE mappings from cve_to_groups table
-        mappings = db.query(models.CveToGroup).filter(
-            models.CveToGroup.cve_id == cve.cve_id
-        ).all()
-
-        for m in mappings:
-            if m.group_name not in actor_nodes_added:
-                # Fetch group metadata for richer node
-                group = db.query(models.MitreGroup).filter(
-                    models.MitreGroup.mitre_id == m.group_mitre_id
-                ).first()
-                nodes.append({
-                    "id": m.group_name,
-                    "type": "actor",
-                    "val": 8,
-                    "mitre_id": m.group_mitre_id,
-                    "country": group.country if group else "Unknown",
-                    "motivation": group.motivation if group else "Unknown",
-                    "source": "MITRE CTI",
-                })
-                actor_nodes_added.add(m.group_name)
-
-            links.append({
-                "source": cve.cve_id,
-                "target": m.group_name,
-                "source_label": "MITRE CTI",
-            })
+        cwes = {
+            d["value"]
+            for w in (cve.raw_json or {}).get("weaknesses", [])
+            for d in w.get("description", [])
+            if d.get("value", "").startswith("CWE-")
+        }
+        for cwe in sorted(cwes):
+            if cwe not in cwe_nodes_added:
+                nodes.append({"id": cwe, "type": "cwe", "val": 8})
+                cwe_nodes_added.add(cwe)
+            links.append({"source": cve.cve_id, "target": cwe, "source_label": "NVD"})
 
     return {"nodes": nodes, "links": links}
 
@@ -748,14 +663,11 @@ async def get_asset_exposure_stats(db: Session = Depends(db.get_db)):
     assets = db.query(models.Asset).all()
     # In a real app we'd have a mapping table. For now, we calculate it.
     # Note: This is simplified.
-    asset_counts = []
-    for asset in assets:
-        count = 0
-        software = [s.lower() for s in (asset.software_list or [])]
-        for cve in db.query(models.CVE).filter(models.CVE.asset_affected == True).all():
-            if any(s in cve.description.lower() for s in software):
-                count += 1
-        asset_counts.append({"name": asset.name, "count": count})
+    affected_cves = db.query(models.CVE).filter(models.CVE.asset_affected == True).all()
+    asset_counts = [
+        {"name": asset.name, "count": sum(1 for cve in affected_cves if matched_software(cve, asset.software_list))}
+        for asset in assets
+    ]
     
     most_exposed = max(asset_counts, key=lambda x: x["count"], default={"name": "N/A", "count": 0})
     
@@ -779,20 +691,14 @@ async def get_assets_exposure_detail(db: Session = Depends(db.get_db)):
             max_score = 0
             vulnerable_pkg = "N/A"
 
-            software = [s.lower() for s in (asset.software_list or [])]
-            logging.debug(f"Asset: {asset.name}, Software List: {software}")
-
-            # This is slow, but works for the demo size
             for cve in db.query(models.CVE).filter(models.CVE.asset_affected == True).all():
-                logging.debug(f"Processing CVE: {cve.cve_id}, Description: {cve.description}")
-                matched_software = [s for s in software if s in cve.description.lower()]
-                if matched_software:
+                matched = matched_software(cve, asset.software_list)
+                if matched:
                     count += 1
-                    if cve.cvss_score is not None:
-                        if cve.cvss_score > max_score:
-                            max_score = cve.cvss_score
-                            highest_risk_cve = {"id": cve.cve_id, "score": cve.cvss_score}
-                            vulnerable_pkg = matched_software[0].capitalize()
+                    if cve.cvss_score is not None and cve.cvss_score > max_score:
+                        max_score = cve.cvss_score
+                        highest_risk_cve = {"id": cve.cve_id, "score": cve.cvss_score}
+                        vulnerable_pkg = matched[0]
 
             result.append({
                 "hostname": asset.name,
@@ -1150,17 +1056,6 @@ async def get_all_threat_actors(db: Session = Depends(db.get_db)):
     groups = db.query(models.MitreGroup).all()
     result = []
     for group in groups:
-        links = db.query(models.CveToGroup).filter(
-            models.CveToGroup.group_mitre_id == group.mitre_id
-        ).all()
-        cve_count = len(links)
-        latest_technique = None
-        latest_technique_id = None
-        for link in links:
-            if link.technique_name:
-                latest_technique = link.technique_name
-                latest_technique_id = link.technique_id
-                break
         result.append({
             "id": group.id,
             "mitre_id": group.mitre_id,
@@ -1172,9 +1067,6 @@ async def get_all_threat_actors(db: Session = Depends(db.get_db)):
             "first_seen": group.first_seen,
             "last_seen": group.last_seen,
             "techniques": group.techniques,
-            "cve_count": cve_count,
-            "latest_technique": latest_technique,
-            "latest_technique_id": latest_technique_id,
         })
     return result
 
@@ -1396,53 +1288,6 @@ COUNTRY_COORDS = {
     "Saudi Arabia": {"lat": 23.88,   "lng": 45.08},
 }
  
-OSINT_COUNTRY_HINTS = {
-    # China
-    "china": "China", "chinese": "China", "prc": "China", "taiwan": "China",
-    "beijing": "China", "volt typhoon": "China", "salt typhoon": "China",
-    "apt41": "China", "hafnium": "China", "apt1": "China", "apt10": "China", "apt19": "China",
-    # Russia
-    "russia": "Russia", "russian": "Russia", "sandworm": "Russia", "apt28": "Russia",
-    "apt29": "Russia", "cozy bear": "Russia", "fancy bear": "Russia", "turla": "Russia",
-    "wizard spider": "Russia", "indrik spider": "Russia", "conti": "Russia", "kremlin": "Russia",
-    # Iran
-    "iran": "Iran", "iranian": "Iran", "oilrig": "Iran", "apt33": "Iran", "apt34": "Iran",
-    "muddywater": "Iran", "magic hound": "Iran", "fox kitten": "Iran", "charming kitten": "Iran",
-    # North Korea
-    "north korea": "North Korea", "dprk": "North Korea", "lazarus": "North Korea",
-    "kimsuky": "North Korea", "apt38": "North Korea", "bluenoroff": "North Korea",
-    # India
-    "india": "India", "indian": "India", "sidewinder": "India", "patchwork": "India", "donot": "India",
-    # Pakistan
-    "pakistan": "Pakistan", "pakistani": "Pakistan", "transparent tribe": "Pakistan", "apt36": "Pakistan",
-    # Vietnam
-    "vietnam": "Vietnam", "vietnamese": "Vietnam", "apt32": "Vietnam", "oceanlotus": "Vietnam",
-    # Israel
-    "israel": "Israel", "israeli": "Israel",
-    # Turkey
-    "turkey": "Turkey", "turkish": "Turkey", "sea turtle": "Turkey", "marbled dust": "Turkey",
-    # Ukraine
-    "ukraine": "Ukraine", "ukrainian": "Ukraine",
-    # Belarus
-    "belarus": "Belarus", "belarusian": "Belarus", "ghostwriter": "Belarus",
-    # Lebanon / Syria / Nigeria
-    "lebanon": "Lebanon", "hezbollah": "Lebanon", "dark caracal": "Lebanon",
-    "syria": "Syria", "syrian": "Syria",
-    "nigeria": "Nigeria", "nigerian": "Nigeria",
-}
- 
-SECTOR_KEYWORDS = {
-    "Financial":     ["bank", "financial", "payment", "fintech", "swift", "credit", "fraud", "crypto", "ransomware"],
-    "Government":    ["government", "ministry", "federal", "nato", "military", "defense", "embassy", "election"],
-    "Energy":        ["energy", "grid", "power", "oil", "gas", "pipeline", "utility", "nuclear"],
-    "Healthcare":    ["hospital", "health", "medical", "pharma", "patient", "clinic"],
-    "Technology":    ["software", "cloud", "saas", "developer", "supply chain", "open source", "npm", "docker", "kubernetes"],
-    "Telecom":       ["telecom", "carrier", "isp", "mobile", "network", "5g", "router"],
-    "Manufacturing": ["manufacturing", "industrial", "scada", "ics", "factory"],
-    "Education":     ["university", "academic", "research", "college", "student", "ngo"],
-}
- 
- 
 @app.get("/api/attack-map")
 async def get_attack_map(db: Session = Depends(db.get_db)):
     from collections import defaultdict
@@ -1450,11 +1295,14 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
  
     # 1. Real MITRE groups
     mg_rows = db.execute(text(
-        "SELECT mitre_id, name, country, motivation, techniques FROM mitre_groups"
+        "SELECT mitre_id, name, country, motivation, techniques, aliases FROM mitre_groups"
     )).fetchall()
  
     actor_index = {}
-    for mitre_id, name, country, motivation, techniques in mg_rows:
+    alias_to_actor = {}
+    for mitre_id, name, country, motivation, techniques, aliases in mg_rows:
+        for alias in [name] + (_json.loads(aliases) if aliases else []):
+            alias_to_actor[alias.lower()] = name
         tech_list = []
         if techniques:
             try:
@@ -1467,33 +1315,6 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
             "motivation": motivation or "Unknown",
             "techniques": tech_list,
         }
- 
-    # 2. Real CVE counts per actor
-    cve_counts = db.execute(text("""
-        SELECT group_name, COUNT(DISTINCT cve_id) as cnt,
-               GROUP_CONCAT(DISTINCT cve_id) as ids
-        FROM cve_to_groups GROUP BY group_name
-    """)).fetchall()
- 
-    actor_cve_map = {}
-    for name, cnt, ids in cve_counts:
-        actor_cve_map[name] = {
-            "cve_count": cnt,
-            "cve_ids": (ids or "").split(",")[:10],
-        }
- 
-    # 3. threat_actors table extra links
-    for name, assoc in db.execute(text("SELECT name, associated_cves FROM threat_actors")).fetchall():
-        try:
-            ids = _json.loads(assoc or "[]")
-        except Exception:
-            ids = []
-        if name not in actor_cve_map:
-            actor_cve_map[name] = {"cve_count": len(ids), "cve_ids": ids[:10]}
-        else:
-            merged = list(set(actor_cve_map[name]["cve_ids"]) | set(ids))[:10]
-            actor_cve_map[name]["cve_ids"] = merged
-            actor_cve_map[name]["cve_count"] = max(actor_cve_map[name]["cve_count"], len(ids))
  
     # 4. Active incidents â€” MITRE tag matching
     inc_rows = db.execute(text("""
@@ -1513,75 +1334,48 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
             except Exception:
                 pass
  
-    # 5. Real OSINT alerts â€” parse country, sector, actor mentions
+    # 5. OSINT alerts: attribution and sectors only from the feed's own structured fields
     osint_rows = db.execute(text("""
-        SELECT source, indicator, description, severity, created_at
+        SELECT indicator, description, severity, adversary, industries
         FROM osint_alerts ORDER BY created_at DESC LIMIT 200
     """)).fetchall()
  
-    osint_by_country  = defaultdict(int)
     osint_actor_hits  = defaultdict(int)
     osint_sectors     = defaultdict(int)
     ticker_items      = []
  
-    for source, indicator, description, severity, created_at in osint_rows:
-        desc_lower = (description or indicator or "").lower()
- 
-        detected_country = None
-        for kw, country in OSINT_COUNTRY_HINTS.items():
-            if kw in desc_lower:
-                detected_country = country
-                break
-        if detected_country:
-            osint_by_country[detected_country] += 1
- 
-        for aname in actor_index:
-            if aname.lower() in desc_lower:
-                osint_actor_hits[aname] += 1
- 
-        for sector, keywords in SECTOR_KEYWORDS.items():
-            if any(kw in desc_lower for kw in keywords):
-                osint_sectors[sector] += 1
+    for indicator, description, severity, adversary, industries in osint_rows:
+        actor = alias_to_actor.get((adversary or "").strip().lower())
+        if actor:
+            osint_actor_hits[actor] += 1
+        for sector in (_json.loads(industries) if industries else []):
+            osint_sectors[sector] += 1
  
         short = (indicator or description or "")[:120]
         sev_tag = "[RED]" if severity == "High" else "[ORANGE]" if severity == "Medium" else "[WHITE]"
         ticker_items.append(f"{sev_tag} {short}")
  
-    # 6. Build country nodes from real data
-    country_data = defaultdict(lambda: {
-        "actors": [], "cve_count": 0, "osint_count": 0,
-        "top_cves": [], "activity_score": 0,
-    })
+    # 6. Build country nodes (MITRE group origin countries)
+    country_data = defaultdict(lambda: {"actors": [], "osint_count": 0, "activity_score": 0})
  
     for aname, ainfo in actor_index.items():
         country = ainfo["country"]
         if country == "Unknown" or country not in COUNTRY_COORDS:
             continue
  
-        cve_info       = actor_cve_map.get(aname, {"cve_count": 0, "cve_ids": []})
-        inc_boost      = incident_actor_hits.get(aname, 0)
-        osint_boost    = osint_actor_hits.get(aname, 0)
+        inc_hits   = incident_actor_hits.get(aname, 0)
+        osint_hits = osint_actor_hits.get(aname, 0)
  
         country_data[country]["actors"].append({
             "name": aname,
             "mitre_id": ainfo["mitre_id"],
             "motivation": ainfo["motivation"],
             "techniques": ainfo["techniques"],
-            "cve_count": cve_info["cve_count"],
-            "cve_ids": cve_info["cve_ids"],
-            "incident_hits": inc_boost,
-            "osint_hits": osint_boost,
+            "incident_hits": inc_hits,
+            "osint_hits": osint_hits,
         })
-        country_data[country]["cve_count"]      += cve_info["cve_count"]
-        country_data[country]["top_cves"]       += cve_info["cve_ids"]
-        country_data[country]["activity_score"] += (
-            cve_info["cve_count"] + inc_boost * 5 + osint_boost * 3
-        )
- 
-    for country, count in osint_by_country.items():
-        if country in country_data:
-            country_data[country]["osint_count"]    += count
-            country_data[country]["activity_score"] += count * 2
+        country_data[country]["osint_count"]    += osint_hits
+        country_data[country]["activity_score"] += inc_hits * 5 + osint_hits * 3
  
     # 7. Serialize
     nodes = []
@@ -1589,9 +1383,9 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
         coords = COUNTRY_COORDS[country]
         score  = data["activity_score"]
         threat_level = (
-            "critical" if score > 500 else
-            "high"     if score > 200 else
-            "medium"   if score > 50  else
+            "critical" if score >= 25 else
+            "high"     if score >= 10 else
+            "medium"   if score >= 3  else
             "low"
         )
         nodes.append({
@@ -1601,13 +1395,11 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
             "threat_level":   threat_level,
             "activity_score": score,
             "actor_count":    len(data["actors"]),
-            "cve_count":      data["cve_count"],
             "osint_count":    data["osint_count"],
-            "sectors":        list(osint_sectors.keys())[:5],
-            "top_cves":       list(set(data["top_cves"]))[:8],
+            "sectors":        [s for s, _ in sorted(osint_sectors.items(), key=lambda kv: -kv[1])][:5],
             "actors":         sorted(
                 data["actors"],
-                key=lambda a: a["cve_count"] + a["osint_hits"] * 3,
+                key=lambda a: a["incident_hits"] * 5 + a["osint_hits"] * 3,
                 reverse=True
             )[:10],
         })

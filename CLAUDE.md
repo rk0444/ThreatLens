@@ -38,7 +38,9 @@ Electron (all three together): `npm run dev` at the root. Build: `npm run build`
 - Non-ASCII characters: edit files via Python, not shell
 - All routes are inline in backend/main.py; imports use `from backend.X`; DB via Depends(db.get_db)
 - Risk score is a nine-component weighted formula shared in frontend/src/utils/riskScore.js
-  - Mirrored in backend/services/scoring.py (keep both in sync; test: backend/tests/test_scoring.py). Uses EPSS percentile, and KEV floors: KEV >= 61 (HIGH), KEV + affected asset >= 86 (CRITICAL)
+  - Mirrored in backend/services/scoring.py (keep both in sync; test: backend/tests/test_scoring.py). Uses EPSS percentile, and KEV floors: KEV >= 61 (HIGH), KEV + affected asset >= 86 (CRITICAL). The "no patch" factor is fixed at 0 (no source states that no patch exists)
+- No guessed data in scores, graphs or stats: only published fields (NVD CVSS/CWE/CPE/reference tags, EPSS, CISA KEV, MITRE ATT&CK, OTX structured fields, real incident tags). Never infer from description keywords; show an empty state instead
+  - Exploited = KEV or NVD "Exploit" reference; ransomware = KEV only; asset match = NVD CPE product vs asset software (backend/services/asset_filter.py)
 - Don't kill the backend while a sync job is running, and don't `git stash`: `threatlens.sqlite-shm` is tracked and a stale one causes "disk I/O error" on startup (fix: move the -shm file aside)
 - Groq API is restricted; don't use it
 - AI Copilot uses GPT-4o via GPT4O_API_KEY

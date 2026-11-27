@@ -83,6 +83,10 @@ class OSINTAlert(Base):
     type: Mapped[str] = mapped_column(String)
     description: Mapped[str] = mapped_column(Text)
     severity: Mapped[str] = mapped_column(String)
+    # Structured OTX pulse fields (often empty); never inferred from text
+    adversary: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    targeted_countries: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
+    industries: Mapped[Optional[List[str]]] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

@@ -16,7 +16,7 @@ export const getRiskScore = (cve) => {
   })();
 
   const threatComponent   = cve.ransomware_use ? 100 * 0.05 : 0;
-  const patchComponent    = cve.patch_available === false ? 100 * 0.05 : 0;
+  const patchComponent    = 0; // dropped: no source says "no patch exists" (see backend/services/scoring.py)
 
   const temporalComponent = (() => {
     const days = (Date.now() - new Date(cve.published_date || 0).getTime())
