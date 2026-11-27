@@ -802,56 +802,87 @@ async def ingest_mitre():
 async def get_scheduler_logs(db: Session = Depends(db.get_db)):
     return db.query(models.SchedulerLog).order_by(models.SchedulerLog.ran_at.desc()).limit(20).all()
 
+def _cve_or_404(db: Session, cve_id: str):
+    cve = db.query(models.CVE).filter(models.CVE.cve_id == cve_id).first()
+    if not cve:
+        raise HTTPException(status_code=404, detail="CVE not found")
+    return cve
+
+
+def _cve_facts(cve, kev) -> dict:
+    """Published fields only (NVD, EPSS, CISA KEV, asset match) for the AI prompt."""
+    raw = cve.raw_json or {}
+    refs = raw.get("references", [])
+    cvss = ((raw.get("metrics", {}).get("cvssMetricV31") or [{}])[0]).get("cvssData", {})
+    return {
+        "cve_id": cve.cve_id,
+        "description": cve.description,
+        "published": str(cve.published_date),
+        "cvss_score": cve.cvss_score,
+        "cvss_vector": cvss.get("vectorString"),
+        "weaknesses_cwe": sorted({d["value"] for w in raw.get("weaknesses", [])
+                                  for d in w.get("description", []) if d.get("value", "").startswith("CWE-")}),
+        "affected_products_from_nvd_cpe": cve.affected_products or [],
+        "reference_tags": sorted({t for r in refs for t in r.get("tags", [])}),
+        "patch_or_advisory_links": [r["url"] for r in refs
+                                    if {"Patch", "Vendor Advisory"} & set(r.get("tags", []))][:5],
+        "epss_percentile": cve.epss_percentile,
+        "cisa_kev": {"required_action": kev.required_action, "due_date": kev.due_date,
+                     "known_ransomware_use": bool(kev.ransomware_use)} if kev else None,
+        "matches_software_on_your_assets": cve.affected_asset_count or 0,
+    }
+
+
 @app.get("/api/cves/{cve_id}/ai-summary")
 async def get_cve_ai_summary(cve_id: str, db: Session = Depends(db.get_db)):
-    """Get AI-generated summary for a CVE"""
-    try:
-        cve = db.query(models.CVE).filter(models.CVE.cve_id == cve_id).first()
-        if not cve:
-            raise HTTPException(status_code=404, detail="CVE not found")
-        
-        # For now, return basic structured data
-        # In production, this would come from AI pipeline
-        return {
-            'what_is_affected': 'Systems with vulnerable software installations',
-            'how_it_works': 'Remote code execution through vulnerable library function',
-            'what_to_do_now': 'Apply security patches immediately and monitor for exploitation attempts',
-            'confidence_score': 0.85,
-            'generated_at': datetime.now(timezone.utc).isoformat()
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logging.error(f"Error getting AI summary for {cve_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    """The stored GPT-4o summary, or {"generated": false} if none was made yet."""
+    cve = _cve_or_404(db, cve_id)
+    return json.loads(cve.ai_summary) if cve.ai_summary else {"generated": False}
+
+
+@app.post("/api/cves/{cve_id}/ai-summary")
+async def generate_cve_ai_summary(cve_id: str, db: Session = Depends(db.get_db)):
+    """Summary written by GPT-4o from the CVE's published fields; stored so each CVE costs one call."""
+    cve = _cve_or_404(db, cve_id)
+    kev = db.query(models.CisaKev).filter(models.CisaKev.cve_id == cve_id).first()
+    result = await ask_gpt4o_json(
+        "You explain one CVE to a SOC analyst. " + NO_GUESSING +
+        " If a field is missing (for example no affected products or no patch link), say it is not published yet. "
+        'Return JSON: {"what_is_affected": "1-2 sentences", "how_it_works": "1-3 sentences", '
+        '"what_to_do_now": "1-3 sentences; use the CISA KEV required action and patch links when given"}.',
+        "CVE RECORD (JSON):\n" + json.dumps(_cve_facts(cve, kev), default=str),
+    )
+    fields = ("what_is_affected", "how_it_works", "what_to_do_now")
+    summary = {f: str(result.get(f) or "").strip() for f in fields}
+    if not all(summary.values()):
+        raise HTTPException(status_code=502, detail="AI service returned an incomplete summary")
+    summary.update(generated=True, model="gpt-4o", generated_at=datetime.now(timezone.utc).isoformat())
+    cve.ai_summary = json.dumps(summary)
+    db.commit()
+    return summary
+
 
 @app.get("/api/cves/{cve_id}/correlations")
 async def get_cve_correlations(cve_id: str, db: Session = Depends(db.get_db)):
-    """Get correlation data for a CVE"""
-    try:
-        cve = db.query(models.CVE).filter(models.CVE.cve_id == cve_id).first()
-        if not cve:
-            raise HTTPException(status_code=404, detail="CVE not found")
-        
-        # Check for related incidents (simplified correlation logic)
-        related_incidents = db.query(models.Incident).filter(
-            models.Incident.created_at >= datetime.now(timezone.utc) - timedelta(days=7)
-        ).all()
-        
-        correlation_statement = None
-        if related_incidents and cve.cvss_score >= 8.0:
-            correlation_statement = f"Potential exploitation of {cve_id} detected on enterprise endpoints"
-        
-        return {
-            'correlation_statement': correlation_statement,
-            'related_incidents': [inc.id for inc in related_incidents],
-            'correlation_score': 0.8 if correlation_statement else 0.0
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logging.error(f"Error getting correlations for {cve_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+    """Your assets whose software NVD lists as affected (CPE match), and their open incidents.
+
+    An open incident on an affected asset is context, not evidence that this CVE was exploited.
+    """
+    cve = _cve_or_404(db, cve_id)
+    assets = []
+    for asset in db.query(models.Asset).all():
+        software = matched_software(cve, asset.software_list)
+        if software:
+            assets.append({"id": asset.id, "name": asset.name, "software": software})
+    incidents = db.query(models.Incident).filter(
+        models.Incident.machine_id.in_([a["id"] for a in assets]),
+        models.Incident.status != "Resolved",
+    ).all() if assets else []
+    return {
+        "affected_assets": assets,
+        "open_incidents": [{"id": i.id, "type": i.type, "severity": i.severity, "asset_id": i.machine_id}
+                           for i in incidents],
+    }
 
 @app.get("/api/incidents/{incident_id}/correlations")
 async def get_incident_correlations(incident_id: int, db: Session = Depends(db.get_db)):

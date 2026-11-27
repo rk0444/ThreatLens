@@ -61,8 +61,41 @@ def test_missing_key_is_an_error():
             assert e.status_code == 503
 
 
+def test_cve_summary_is_stored_and_reused():
+    session = _session()
+    assert asyncio.run(main.get_cve_ai_summary("CVE-2026-0001", session)) == {"generated": False}
+    reply = {"what_is_affected": "a", "how_it_works": "b", "what_to_do_now": "c"}
+    with mock.patch.object(main, "ask_gpt4o_json", mock.AsyncMock(return_value=reply)) as ask:
+        asyncio.run(main.generate_cve_ai_summary("CVE-2026-0001", session))
+    assert '"cve_id": "CVE-2026-0001"' in ask.call_args.args[1]
+    stored = asyncio.run(main.get_cve_ai_summary("CVE-2026-0001", session))
+    assert stored["what_to_do_now"] == "c" and stored["generated"] is True and "confidence_score" not in stored
+    with mock.patch.object(main, "ask_gpt4o_json", mock.AsyncMock(return_value={"what_is_affected": "a"})):
+        try:
+            asyncio.run(main.generate_cve_ai_summary("CVE-2026-0001", session))
+            assert False, "incomplete summary must be an error"
+        except HTTPException as e:
+            assert e.status_code == 502
+
+
+def test_cve_correlation_needs_a_real_asset_match():
+    session = _session()  # incident #1 is open on asset 7, which runs no matching software
+    cve = session.query(models.CVE).one()
+    assert asyncio.run(main.get_cve_correlations("CVE-2026-0001", session)) == {"affected_assets": [], "open_incidents": []}
+    cve.cvss_score = None  # used to crash the old endpoint
+    cve.raw_json = {"configurations": [{"nodes": [{"cpeMatch": [
+        {"vulnerable": True, "criteria": "cpe:2.3:a:openssl:openssl:3.0.0:*:*:*:*:*:*:*"}]}]}]}
+    session.query(models.Asset).one().software_list = ["OpenSSL 3.0"]
+    session.commit()
+    result = asyncio.run(main.get_cve_correlations("CVE-2026-0001", session))
+    assert result["affected_assets"] == [{"id": 7, "name": "host", "software": ["OpenSSL 3.0"]}]
+    assert [i["id"] for i in result["open_incidents"]] == [1]
+
+
 if __name__ == "__main__":
     test_brief_stores_model_output_and_real_top_threats()
     test_playbook_numbers_steps_and_rejects_empty()
     test_missing_key_is_an_error()
+    test_cve_summary_is_stored_and_reused()
+    test_cve_correlation_needs_a_real_asset_match()
     print("AI endpoint tests passed")

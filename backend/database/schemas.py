@@ -1,5 +1,5 @@
-from pydantic import BaseModel, ConfigDict
-from datetime import datetime
+from pydantic import BaseModel, ConfigDict, field_validator
+from datetime import datetime, timezone
 from typing import List, Optional
 
 
@@ -26,6 +26,12 @@ class CVEResponse(CVEBase):
     risk_score: Optional[float] = None
     risk_band: Optional[str] = None
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("published_date", "created_at")
+    @classmethod
+    def _as_utc(cls, v):
+        # SQLite returns naive datetimes that are UTC; without an offset browsers read them as local time
+        return v.replace(tzinfo=timezone.utc) if v is not None and v.tzinfo is None else v
 
 
 class AssetBase(BaseModel):

@@ -259,7 +259,7 @@ const GlobalThreats = () => {
                         <td style={{ maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>
                           {cve.description}
                         </td>
-                        <td>{cve.cvss_score}</td>
+                        <td>{cve.cvss_score ?? <span style={{ color: 'var(--text-muted)' }} title="NVD has not scored this CVE yet">—</span>}</td>
                         <td>
                           {cve.epss_score == null ? (
                             <span style={{ color: 'var(--text-muted)' }} title="EPSS has not scored this CVE yet">—</span>

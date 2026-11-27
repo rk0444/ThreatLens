@@ -1,68 +1,46 @@
 import { useState, useEffect } from 'react';
-import { X, ShieldAlert, Globe, ExternalLink, Brain, AlertTriangle, Copy, CheckCircle } from 'lucide-react';
+import { X, ShieldAlert, ExternalLink, Brain, AlertTriangle, Server } from 'lucide-react';
 
 import { getRiskColor } from '../utils/riskScore';
 
-const getMitreStageColor = (stage) => {
-  const colors = {
-    'Initial Access': '#dc2626',
-    'Execution': '#ea580c',
-    'Persistence': '#d97706',
-    'Privilege Escalation': '#ca8a04',
-    'Defense Evasion': '#65a30d',
-    'Credential Access': '#16a34a',
-    'Discovery': '#0891b2',
-    'Lateral Movement': '#2563eb',
-    'Collection': '#7c3aed',
-    'Exfiltration': '#c026d3',
-    'Command and Control': '#db2777',
-    'Impact': '#991b1b'
-  };
-  return colors[stage] || '#6b7280';
-};
-
-const copyToClipboard = async (text, commandId) => {
-  try {
-    await navigator.clipboard.writeText(text);
-    setCopiedCommand(commandId);
-    setTimeout(() => setCopiedCommand(null), 2000);
-  } catch (err) {
-    console.error('Failed to copy:', err);
-  }
-};
+const API = 'http://127.0.0.1:8000';
 
 export default function CveDrawer({ cve, onClose, footer }) {
   const [aiSummary, setAiSummary] = useState(null);
-  const [loadingAiSummary, setLoadingAiSummary] = useState(false);
+  const [aiStatus, setAiStatus] = useState(null); // null | 'loading' | 'generating' | error text
   const [correlationData, setCorrelationData] = useState(null);
-  const [loadingCorrelation, setLoadingCorrelation] = useState(false);
-  const [copiedCommand, setCopiedCommand] = useState(null);
 
   useEffect(() => {
-    if (cve) {
-      // Fetch AI summary
-      setLoadingAiSummary(true);
-      fetch(`http://127.0.0.1:8000/api/cves/${cve.cve_id}/ai-summary`)
-        .then(r => r.json())
-        .then(data => {
-          setAiSummary(data);
-          setLoadingAiSummary(false);
-        })
-        .catch(() => setLoadingAiSummary(false));
-
-      // Fetch correlation data
-      setLoadingCorrelation(true);
-      fetch(`http://127.0.0.1:8000/api/cves/${cve.cve_id}/correlations`)
-        .then(r => r.json())
-        .then(data => {
-          setCorrelationData(data);
-          setLoadingCorrelation(false);
-        })
-        .catch(() => setLoadingCorrelation(false));
-    }
+    if (!cve) return;
+    setAiSummary(null);
+    setCorrelationData(null);
+    // Only a stored summary is loaded here; generating one costs a GPT-4o call, so it waits for a click
+    setAiStatus('loading');
+    fetch(`${API}/api/cves/${cve.cve_id}/ai-summary`)
+      .then(r => r.json())
+      .then(data => { setAiSummary(data.generated ? data : null); setAiStatus(null); })
+      .catch(() => setAiStatus('Could not load the stored summary'));
+    fetch(`${API}/api/cves/${cve.cve_id}/correlations`)
+      .then(r => r.json())
+      .then(setCorrelationData)
+      .catch(() => setCorrelationData(null));
   }, [cve]);
 
+  const generateSummary = async () => {
+    setAiStatus('generating');
+    try {
+      const res = await fetch(`${API}/api/cves/${cve.cve_id}/ai-summary`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
+      setAiSummary(data);
+      setAiStatus(null);
+    } catch (e) {
+      setAiStatus(e.message);
+    }
+  };
+
   if (!cve) return null;
+  const band = (cve.risk_band || 'LOW').toUpperCase();
 
   return (
     <div className="drawer-overlay" onClick={onClose}>
@@ -105,7 +83,7 @@ export default function CveDrawer({ cve, onClose, footer }) {
             <div>
               <div className="label-small">ThreatLens Risk Score</div>
               <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.2rem' }}>
-                Composite score based on CVSS, EPSS, and Exploitation status.
+                {band} band. Weighted from CVSS, EPSS percentile, CISA KEV, public exploit, your assets, ransomware use and recency; KEV sets a minimum of HIGH (CRITICAL if it affects your assets).
               </div>
             </div>
           </div>
@@ -113,20 +91,20 @@ export default function CveDrawer({ cve, onClose, footer }) {
           <div className="info-grid">
             <div className="info-item">
               <span className="label-small">CVSS Base Score</span>
-              <div className="value">{cve.cvss_score}</div>
+              <div className="value">{cve.cvss_score ?? 'Not scored by NVD yet'}</div>
             </div>
             <div className="info-item">
               <span className="label-small">EPSS Probability</span>
-              <div className="value">{(cve.epss_score * 100).toFixed(2)}%</div>
+              <div className="value">{cve.epss_score == null ? 'Not scored by EPSS yet' : `${(cve.epss_score * 100).toFixed(2)}%`}</div>
             </div>
             <div className="info-item">
               <span className="label-small">Published Date</span>
               <div className="value">{new Date(cve.published_date).toLocaleDateString()}</div>
             </div>
             <div className="info-item">
-              <span className="label-small">Status</span>
-              <div className="value" style={{ color: cve.actively_exploited ? 'var(--danger)' : 'var(--success)' }}>
-                {cve.actively_exploited ? 'Critical Risk' : 'Monitoring'}
+              <span className="label-small">Risk Band</span>
+              <div className="value" style={{ color: getRiskColor(Math.floor(cve.risk_score ?? 0)) }}>
+                {band}
               </div>
             </div>
           </div>
@@ -136,26 +114,31 @@ export default function CveDrawer({ cve, onClose, footer }) {
             <p style={{ lineHeight: 1.6, marginTop: '0.5rem' }}>{cve.description}</p>
           </div>
 
-          {/* Correlation Alert */}
-          {correlationData && correlationData.correlation_statement && (
-            <div style={{ 
-              background: 'linear-gradient(135deg, rgba(251, 191, 36, 0.15), rgba(245, 158, 11, 0.15))', 
-              border: '1px solid #f59e0b', 
-              borderRadius: '6px', 
-              padding: '1rem', 
+          {/* Your assets whose software NVD lists as affected (CPE match) */}
+          {correlationData?.affected_assets?.length > 0 && (
+            <div style={{
+              background: 'rgba(245, 158, 11, 0.12)',
+              border: '1px solid #f59e0b',
+              borderRadius: '6px',
+              padding: '1rem',
               marginBottom: '2rem',
               color: '#f59e0b'
             }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-                <AlertTriangle size={20} />
-                <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>ACTIVE EXPLOITATION DETECTED</div>
+                <Server size={20} />
+                <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>AFFECTS YOUR ASSETS</div>
               </div>
               <div style={{ fontSize: '0.85rem', lineHeight: 1.5 }}>
-                {correlationData.correlation_statement}
+                {correlationData.affected_assets.map(a => `${a.name} (${a.software.join(', ')})`).join('; ')}
               </div>
-              {correlationData.related_incidents && correlationData.related_incidents.length > 0 && (
+              <div style={{ fontSize: '0.75rem', marginTop: '0.5rem', color: 'var(--text-muted)' }}>
+                Software name matches a product NVD lists as vulnerable; installed versions are not compared.
+              </div>
+              {correlationData.open_incidents?.length > 0 && (
                 <div style={{ marginTop: '0.75rem', fontSize: '0.8rem' }}>
-                  <strong>Related Incidents:</strong> {correlationData.related_incidents.map(id => `INC-${id}`).join(', ')}
+                  <strong>Open incidents on these assets:</strong>{' '}
+                  {correlationData.open_incidents.map(i => `INC-${i.id} (${i.severity} ${i.type})`).join(', ')}
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Not evidence that this CVE was exploited.</div>
                 </div>
               )}
             </div>
@@ -165,132 +148,60 @@ export default function CveDrawer({ cve, onClose, footer }) {
           <div style={{ marginTop: '2rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
               <Brain size={18} color="var(--accent-gold)" />
-              <div className="label-small" style={{ margin: 0 }}>AI Analyst Summary</div>
+              <div className="label-small" style={{ margin: 0 }}>AI Analyst Summary (GPT-4o)</div>
             </div>
-            
-            {loadingAiSummary ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                <div className="skeleton" style={{ height: '20px', width: '60%' }}></div>
-                <div className="skeleton" style={{ height: '16px', width: '100%' }}></div>
-                <div className="skeleton" style={{ height: '16px', width: '90%' }}></div>
-                <div className="skeleton" style={{ height: '16px', width: '85%' }}></div>
-              </div>
+
+            {aiStatus === 'loading' ? (
+              <div className="skeleton" style={{ height: '20px', width: '60%' }}></div>
             ) : aiSummary ? (
-              <div style={{ 
-                background: 'rgba(255,255,255,0.02)', 
-                border: '1px solid var(--border)', 
-                borderRadius: '6px', 
-                padding: '1.25rem' 
+              <div style={{
+                background: 'rgba(255,255,255,0.02)',
+                border: '1px solid var(--border)',
+                borderRadius: '6px',
+                padding: '1.25rem'
               }}>
                 <div style={{ display: 'grid', gap: '1rem', marginBottom: '1rem' }}>
-                  <div>
-                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem', fontSize: '0.9rem' }}>
-                      What is Affected
+                  {[['What is Affected', aiSummary.what_is_affected],
+                    ['How It Works', aiSummary.how_it_works],
+                    ['What to Do Right Now', aiSummary.what_to_do_now]].map(([title, text]) => (
+                    <div key={title}>
+                      <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem', fontSize: '0.9rem' }}>
+                        {title}
+                      </div>
+                      <div style={{ color: 'var(--text-secondary)', lineHeight: 1.5, fontSize: '0.85rem' }}>
+                        {text}
+                      </div>
                     </div>
-                    <div style={{ color: 'var(--text-secondary)', lineHeight: 1.5, fontSize: '0.85rem' }}>
-                      {aiSummary.what_is_affected}
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem', fontSize: '0.9rem' }}>
-                      How It Works
-                    </div>
-                    <div style={{ color: 'var(--text-secondary)', lineHeight: 1.5, fontSize: '0.85rem' }}>
-                      {aiSummary.how_it_works}
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem', fontSize: '0.9rem' }}>
-                      What to Do Right Now
-                    </div>
-                    <div style={{ color: 'var(--text-secondary)', lineHeight: 1.5, fontSize: '0.85rem' }}>
-                      {aiSummary.what_to_do_now}
-                    </div>
-                  </div>
+                  ))}
                 </div>
-                
-                <div style={{ 
-                  display: 'flex', 
-                  justifyContent: 'space-between', 
-                  alignItems: 'center', 
-                  paddingTop: '0.75rem', 
+                <div style={{
+                  paddingTop: '0.75rem',
                   borderTop: '1px solid var(--border)',
                   fontSize: '0.75rem',
                   color: 'var(--text-muted)'
                 }}>
-                  <span>Confidence: {Math.round((aiSummary.confidence_score || 0.7) * 100)}%</span>
-                  <span>Generated: {new Date(aiSummary.generated_at).toLocaleString()}</span>
+                  AI-generated by GPT-4o from this CVE's NVD, EPSS and CISA KEV fields at {new Date(aiSummary.generated_at).toLocaleString()}.
                 </div>
               </div>
             ) : (
-              <div style={{ 
-                background: 'rgba(255,255,255,0.02)', 
-                border: '1px solid var(--border)', 
-                borderRadius: '6px', 
+              <div style={{
+                background: 'rgba(255,255,255,0.02)',
+                border: '1px solid var(--border)',
+                borderRadius: '6px',
                 padding: '1.25rem',
                 textAlign: 'center',
                 color: 'var(--text-muted)',
                 fontSize: '0.85rem'
               }}>
-                AI analysis unavailable. Check back later.
+                {aiStatus && aiStatus !== 'generating' && (
+                  <div style={{ color: 'var(--danger)', marginBottom: '0.75rem' }}>Could not generate summary: {aiStatus}</div>
+                )}
+                <button className="gold-button" onClick={generateSummary} disabled={aiStatus === 'generating'}>
+                  {aiStatus === 'generating' ? 'Generating...' : 'Generate summary with GPT-4o'}
+                </button>
               </div>
             )}
           </div>
-
-          {/* MITRE ATT&CK Tags */}
-          {aiSummary && (aiSummary.mitre_stage || aiSummary.mitre_tags) && (
-            <div style={{ marginTop: '2rem' }}>
-              <div className="label-small" style={{ marginBottom: '1rem' }}>MITRE ATT&CK Classification</div>
-              
-              {aiSummary.mitre_stage && (
-                <div style={{ marginBottom: '1rem' }}>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>Stage</div>
-                  <div 
-                    style={{ 
-                      display: 'inline-block',
-                      background: getMitreStageColor(aiSummary.mitre_stage),
-                      color: 'white',
-                      padding: '0.5rem 1rem',
-                      borderRadius: '20px',
-                      fontSize: '0.85rem',
-                      fontWeight: 600,
-                      textTransform: 'uppercase',
-                      letterSpacing: '0.5px'
-                    }}
-                  >
-                    {aiSummary.mitre_stage}
-                  </div>
-                </div>
-              )}
-              
-              {aiSummary.mitre_tags && aiSummary.mitre_tags.length > 0 && (
-                <div>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>Techniques</div>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                    {aiSummary.mitre_tags.map((tag, idx) => (
-                      <span 
-                        key={idx}
-                        style={{ 
-                          background: 'rgba(255,255,255,0.1)',
-                          border: '1px solid var(--border)',
-                          color: 'var(--text-secondary)',
-                          padding: '0.25rem 0.75rem',
-                          borderRadius: '12px',
-                          fontSize: '0.75rem',
-                          fontFamily: 'JetBrains Mono'
-                        }}
-                      >
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
 
           <div style={{ marginTop: '2rem' }}>
              <a 
