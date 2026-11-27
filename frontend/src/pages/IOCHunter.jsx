@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { Search, Shield, AlertTriangle, CheckCircle, HelpCircle, Loader, Globe, FileSearch, Hash, Link, Server, Save } from 'lucide-react';
 
 const API = 'http://127.0.0.1:8000';
@@ -97,10 +97,12 @@ export default function IOCHunter() {
   const [error, setError]     = useState(null);
   const [saveState, setSaveState] = useState(null); // null | 'saving' | error text
   const [history, setHistory] = useState(loadHistory);
+  const lookupSeq = useRef(0); // only the newest lookup may show its answer
 
   async function lookup(value) {
     const ioc = (value || input).trim();
     if (!ioc) return;
+    const seq = ++lookupSeq.current;
 
     setLoading(true);
     setError(null);
@@ -113,6 +115,7 @@ export default function IOCHunter() {
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ ioc }),
       });
+      if (seq !== lookupSeq.current) return; // a newer lookup started; drop this answer
       setResult(data);
       setHistory(prev => {
         const next = [{ ioc, verdict: data.verdict, risk: data.risk, type: data.type },
@@ -121,9 +124,9 @@ export default function IOCHunter() {
         return next;
       });
     } catch (e) {
-      setError(e.message);
+      if (seq === lookupSeq.current) setError(e.message);
     } finally {
-      setLoading(false);
+      if (seq === lookupSeq.current) setLoading(false);
     }
   }
 
@@ -173,7 +176,7 @@ export default function IOCHunter() {
         <input
           value={input}
           onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && lookup()}
+          onKeyDown={e => e.key === 'Enter' && !loading && lookup()}
           placeholder="IP address, file hash, URL or domain"
           aria-label="IP address, file hash, URL or domain"
           style={{
@@ -254,7 +257,9 @@ export default function IOCHunter() {
               <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
                 {result.verdict === 'Not flagged' && `No detections from ${result.checked_by.join(' and ')}.`}
                 {result.verdict === 'Reported' && `Reported on AbuseIPDB below its malicious threshold.`}
-                {result.verdict === 'Unknown' && 'No reputation source had data on it, so it is not known to be safe.'}
+                {result.verdict === 'Unknown' && (result.checked_by?.length
+                  ? `Not on the ${result.checked_by.join(' or ')}; no other source could answer, so it is not known to be safe.`
+                  : 'No reputation source had data on it, so it is not known to be safe.')}
                 {result.verdict === 'Not checked' && sources.note?.message}
                 {result.verdict === 'Flagged' && 'VirusTotal reports per-engine detections; weigh how many engines agree.'}
               </div>

@@ -1381,7 +1381,7 @@ def _detect_ioc_type(value: str) -> str:
         return "hash"
     if v.lower().startswith(("http://", "https://")):
         return "url"
-    if _re.fullmatch(r"([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}", v):
+    if _re.fullmatch(r"([a-zA-Z0-9-]+\.)+([a-zA-Z]{2,}|xn--[a-zA-Z0-9-]+)", v):  # incl. punycode TLDs
         return "domain"
     return "unknown"
 
@@ -1434,8 +1434,9 @@ def ioc_lookup(body: schemas.IOCLookup, db: Session = Depends(db.get_db)):
         else:
             rep = check_ip_reputation(raw, db_session=db)
             listed = rep["source"] not in (None, "AbuseIPDB")
-            sources["blocklist"] = ({"found": True, "list": rep["source"], "network": rep["network"],
-                                     "reference": rep["reference"]} if listed else {"found": False})
+            if listed or ipaddress.ip_address(raw).version == 4:  # the published lists hold IPv4 networks only
+                sources["blocklist"] = ({"found": True, "list": rep["source"], "network": rep["network"],
+                                         "reference": rep["reference"]} if listed else {"found": False})
             if listed:
                 tags.append(f"Listed on {rep['source']}")
             elif "error" in rep:

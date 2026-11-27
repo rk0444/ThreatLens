@@ -56,6 +56,24 @@ def test_verdicts_never_default_to_clean():
         assert e.status_code == 422
 
 
+def test_only_sources_that_could_answer_are_claimed():
+    from backend.services import abuseipdb
+    db = _db()
+    look = lambda ioc: main.ioc_lookup(schemas.IOCLookup(ioc=ioc), db)
+    base = {"is_malicious": False, "source": None, "reference": None, "network": None,
+            "score": None, "country": None, "isp": None, "usage_type": None}
+
+    abuseipdb.check_ip_reputation = lambda ip, db_session=None: {**base, "ip": ip, "source": "AbuseIPDB", "score": 0}
+    r = look("2001:4860:4860::8888")
+    assert r["checked_by"] == ["AbuseIPDB"] and "blocklist" not in r["sources"]  # the lists hold IPv4 only
+
+    abuseipdb.check_ip_reputation = lambda ip, db_session=None: {**base, "ip": ip, "error": "AbuseIPDB daily quota used up"}
+    r = look("8.8.4.4")
+    assert (r["verdict"], r["checked_by"]) == ("Unknown", ["published blocklists"])  # lists answered, AbuseIPDB didn't
+
+    assert main._detect_ioc_type("xn--e1afmkfd.xn--p1ai") == "domain"  # punycode TLD (.рф)
+
+
 def test_save_only_when_asked_and_once():
     db = _db()
     body = schemas.IOCSave(ioc="44d88612fea8a8f36de82e1278abb02f", summary="VirusTotal: 56 engines flagged it")
@@ -69,4 +87,5 @@ if __name__ == "__main__":
     test_types()
     test_verdicts_never_default_to_clean()
     test_save_only_when_asked_and_once()
+    test_only_sources_that_could_answer_are_claimed()
     print("ioc hunter tests passed")
