@@ -12,6 +12,8 @@ const MARKER = { dot: '#f97316', ring: '#f9731630', glow: '#f97316cc' };
 const SEVERITY_COLOR = { Critical: '#ef4444', High: '#f97316', Medium: '#eab308', Low: '#22d3ee' };
 const NO_INCIDENT_COLOR = '#94a3b8';
 const IP_COLOR = '#a855f7';
+// The map wraps east-west, so draw every mark on the neighbouring copies of the world too
+const WORLD_COPIES = [-360, 0, 360];
 const COUNTRY_MARKERS_MAX_ZOOM = 6; // OTX only names countries; past this a centre point would look like a street
 
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services';
@@ -101,6 +103,8 @@ const AttackMap = () => {
     const map = L.map(mapRef.current, {
       center: [20, 15], zoom: 2, minZoom: 2, maxZoom: 19,
       zoomControl: false, attributionControl: true, worldCopyJump: true,
+      // stop at the top and bottom of the world (no black band past the poles); east-west still wraps
+      maxBounds: [[-85, -1080], [85, 1080]], maxBoundsViscosity: 1.0,
     });
     const watchTiles = (layer) => layer.on('tileerror', () => setTileError(true)).on('tileload', () => setTileError(false));
     const satellite = L.layerGroup([
@@ -153,29 +157,33 @@ const AttackMap = () => {
     if (!map || !layers || !mapData) return;
     Object.values(layers).forEach(group => group.clearLayers());
 
-    (mapData.nodes || []).forEach(node => {
-      L.marker([node.lat, node.lng], { icon: countryIcon(node.alert_count) })
+    (mapData.nodes || []).forEach(node => WORLD_COPIES.forEach(shift => {
+      L.marker([node.lat, node.lng + shift], { icon: countryIcon(node.alert_count) })
         .on('click', () => {
           setSelection({ kind: 'country', id: node.country });
-          if (map.getZoom() < 5) flyBesidePanel(map, node.lat, node.lng, 5);
+          if (map.getZoom() < 5) flyBesidePanel(map, node.lat, node.lng + shift, 5);
         })
         .addTo(layers.countries);
-    });
+    }));
 
-    (mapData.ip_areas || []).forEach(area => {
-      L.circle([area.lat, area.lng], {
+    (mapData.ip_areas || []).forEach(area => WORLD_COPIES.forEach(shift => {
+      L.circle([area.lat, area.lng + shift], {
         radius: area.accuracy_km * 1000, // MaxMind's own accuracy radius
         color: IP_COLOR, weight: 1.5, fillColor: IP_COLOR, fillOpacity: 0.15, bubblingMouseEvents: false,
       }).on('click', () => setSelection({ kind: 'ip', id: area.ip })).addTo(layers.ips);
-    });
+      // A small accuracy circle is sub-pixel when zoomed out; this fixed-size dot keeps it findable
+      L.circleMarker([area.lat, area.lng + shift], {
+        radius: 5, color: IP_COLOR, weight: 2, fillColor: IP_COLOR, fillOpacity: 0.6, bubblingMouseEvents: false,
+      }).on('click', () => setSelection({ kind: 'ip', id: area.ip })).addTo(layers.ips);
+    }));
 
-    (mapData.asset_pins || []).forEach(pin => {
-      L.marker([pin.lat, pin.lng], {
+    (mapData.asset_pins || []).forEach(pin => WORLD_COPIES.forEach(shift => {
+      L.marker([pin.lat, pin.lng + shift], {
         icon: pinIcon(SEVERITY_COLOR[pin.highest_severity] || NO_INCIDENT_COLOR),
         zIndexOffset: 1000,
         title: pin.name,
       }).on('click', () => setSelection({ kind: 'asset', id: pin.id })).addTo(layers.assets);
-    });
+    }));
   }, [mapData]);
 
   useEffect(() => {
@@ -404,6 +412,9 @@ const AttackMap = () => {
                 Approximate: ±{selected.accuracy_km} km (GeoIP). This is where the attacker's network roughly sits, not a target.
               </div>
               {label('DETAILS')}
+              {selected.detected_by && selected.detected_by !== 'AbuseIPDB' && (
+                <div>Detected by: {selected.detected_by}{selected.reference ? ` (${selected.reference})` : ''}</div>
+              )}
               {selected.abuse_score != null && <div>AbuseIPDB score {selected.abuse_score}/100</div>}
               {selected.machine && <div>Contacted by {selected.machine}</div>}
               <div>Source: {selected.source}</div>

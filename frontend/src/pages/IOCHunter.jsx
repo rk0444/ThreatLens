@@ -251,6 +251,14 @@ export default function IOCHunter() {
               data={result.sources.osint_db}
               color={result.sources.osint_db?.found ? '#f5a623' : '#00ff88'}
             />
+            {result.sources.blocklist && (
+              <SourceCard
+                title="BLOCKLISTS"
+                icon={Shield}
+                data={result.sources.blocklist}
+                color={result.sources.blocklist?.found ? '#ff4444' : '#00ff88'}
+              />
+            )}
             {result.sources.abuseipdb && (
               <SourceCard
                 title="ABUSEIPDB"

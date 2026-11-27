@@ -17,9 +17,9 @@ NVD_API_KEY = os.getenv("NVD_API_KEY")
 
 
 def _log_scheduler(status: str, message: str = ""):
-    db_path = os.path.join(os.path.dirname(__file__), "..", "database", "threatlens.sqlite")
+    from backend.database.db import DB_PATH
     try:
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(DB_PATH, timeout=15)
         conn.execute(
             "INSERT INTO scheduler_logs (job_name, status, error_message, ran_at) VALUES (?,?,?,?)",
             ("nvd_ingest", status, message, datetime.now(timezone.utc).isoformat())

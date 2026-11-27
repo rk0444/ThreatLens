@@ -27,7 +27,11 @@ Frontend (Vite on 127.0.0.1:5173, strict port):
 cd frontend; npm run dev
 ```
 
-Electron (all three together): `npm run dev` at the root. Build: `npm run build` (Vite build, then electron-builder; output in `build/`).
+Live malicious-IP detection on this PC (checks each new public connection against the published blocklists, then AbuseIPDB cached 24 h). `npm run dev` starts it automatically once the backend answers; on its own: `npm run monitor:dev`.
+
+Electron (frontend, backend, network monitor and the window together): `npm run dev` at the root. The window opens once the backend answers; closing it calls `POST /api/system/shutdown` (waits for running syncs, closes the DB) and `concurrently -k` then stops the rest. Build: `npm run build` (Vite build, then electron-builder; output in `build/`; `npx electron-builder --dir` for an unpacked test build).
+
+Installed app (`main.js`, not dev): keeps its data in `%APPDATA%\threatlens-v2` (`.env`, `threatlens.sqlite` via `THREATLENS_DATA_DIR`, `python\` private venv built from system Python 3 on first launch, `logs\`), then starts the backend and network monitor itself. Packaging excludes the project's database, backups, `.mmdb` and caches.
 
 ## Rules and notes
 
@@ -44,4 +48,4 @@ Electron (all three together): `npm run dev` at the root. Build: `npm run build`
 - Don't kill the backend while a sync job is running, and don't `git stash`: `threatlens.sqlite-shm` is tracked and a stale one causes "disk I/O error" on startup (fix: move the -shm file aside)
 - Groq API is restricted; don't use it
 - AI Copilot uses GPT-4o via GPT4O_API_KEY
-- Remaining work: Settings page, UI polish, Electron packaging (electron-builder)
+- Remaining work: Settings page, UI polish; packaging: app icon (no `assets/`), code signing, bundling Python (installed app needs system Python 3)

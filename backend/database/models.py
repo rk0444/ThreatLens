@@ -168,9 +168,12 @@ class FlaggedConnection(Base):
     machine_id: Mapped[int] = mapped_column(Integer)
     machine_hostname: Mapped[str] = mapped_column(String)
     destination_ip: Mapped[str] = mapped_column(String)
-    abuse_score: Mapped[int] = mapped_column(Integer)
+    # AbuseIPDB score; null when the hit came from a blocklist, which publishes no score
+    abuse_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     country: Mapped[Optional[str]] = mapped_column(String)
     isp: Mapped[Optional[str]] = mapped_column(String)
+    source: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # e.g. "Spamhaus DROP", "AbuseIPDB"
+    reference: Mapped[Optional[str]] = mapped_column(String, nullable=True)  # SBL id, malware family
     times_seen: Mapped[int] = mapped_column(Integer, default=1)
     last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     blocked: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -183,3 +186,25 @@ class Blocklist(Base):
     reason: Mapped[Optional[str]] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+
+class IPBlocklistEntry(Base):
+    """A network listed by a published blocklist (abuse.ch Feodo Tracker, Spamhaus DROP)."""
+    __tablename__ = "ip_blocklist"
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    network: Mapped[str] = mapped_column(String)  # CIDR; single IPs as /32
+    source: Mapped[str] = mapped_column(String, index=True)
+    reference: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class IPReputationCache(Base):
+    """Last AbuseIPDB answer per IP, so each IP costs at most one lookup per day."""
+    __tablename__ = "ip_reputation_cache"
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    ip: Mapped[str] = mapped_column(String, unique=True, index=True)
+    is_malicious: Mapped[bool] = mapped_column(Boolean)
+    score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    country: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    isp: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    usage_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

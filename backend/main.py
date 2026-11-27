@@ -32,6 +32,7 @@ from backend.services.asset_filter import rematch_all_cves, matched_software
 from backend.services.osint import fetch_osint_alerts
 from backend.services.abuseipdb import check_ip_reputation
 from backend.services import geoip
+from backend.services.ip_blocklists import sync_ip_blocklists
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 import threading
@@ -59,6 +60,8 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+app_scheduler = None  # set in lifespan; /api/system/shutdown waits for its running jobs
+JOB_THREAD = "threatlens-job"  # name of one-off background job threads, joined on shutdown
 app_loop = None  # set in lifespan; scheduler jobs run in threads and must hop onto it
 
 
@@ -98,13 +101,29 @@ def rematch_in_background():
     def job(session):
         rematch_all_cves(session)
         notify(json.dumps({"type": "CVES_UPDATED", "data": {"rematched": True}}))
-    threading.Thread(target=safe_run_job, args=(job, "Asset Rematch")).start()
+    threading.Thread(name=JOB_THREAD, target=safe_run_job, args=(job, "Asset Rematch")).start()
 
 def scheduler_event_listener(event):
     if event.exception:
         print(f"[SCHEDULER EVENT] Job {event.job_id} raised an exception: {event.exception}")
     else:
         print(f"[SCHEDULER EVENT] Job {event.job_id} completed successfully.")
+
+def _relax_flagged_abuse_score(conn):
+    """Older databases have flagged_connections.abuse_score NOT NULL; SQLite can't relax that in place,
+    so rebuild the table from the current model and copy the rows across (same transaction)."""
+    cols = {row[1]: row for row in conn.execute(text("PRAGMA table_info(flagged_connections)"))}
+    if not cols or not cols["abuse_score"][3]:
+        return
+    for index in conn.execute(text("PRAGMA index_list(flagged_connections)")).fetchall():
+        if index[3] == "c":  # created by CREATE INDEX, would clash with the new table's index names
+            conn.execute(text(f'DROP INDEX "{index[1]}"'))
+    conn.execute(text("ALTER TABLE flagged_connections RENAME TO flagged_connections_old"))
+    models.FlaggedConnection.__table__.create(conn)
+    shared = ", ".join(c for c in cols if c in models.FlaggedConnection.__table__.columns)
+    conn.execute(text(f"INSERT INTO flagged_connections ({shared}) SELECT {shared} FROM flagged_connections_old"))
+    conn.execute(text("DROP TABLE flagged_connections_old"))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -114,8 +133,10 @@ async def lifespan(app: FastAPI):
     added_columns = {
         "osint_alerts": (("adversary", "VARCHAR"), ("targeted_countries", "JSON"), ("industries", "JSON")),
         "assets": (("latitude", "FLOAT"), ("longitude", "FLOAT"), ("location_label", "VARCHAR")),
+        "flagged_connections": (("source", "VARCHAR"), ("reference", "VARCHAR")),
     }
     with db.engine.begin() as conn:
+        _relax_flagged_abuse_score(conn)
         for table, columns in added_columns.items():
             have = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
             for col, col_type in columns:
@@ -142,7 +163,8 @@ async def lifespan(app: FastAPI):
     app_loop = asyncio.get_running_loop()
 
     # Start Scheduler
-    scheduler = BackgroundScheduler()
+    global app_scheduler
+    scheduler = app_scheduler = BackgroundScheduler()
     scheduler.add_listener(scheduler_event_listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
     
     # Trigger jobs immediately, then on interval
@@ -164,11 +186,17 @@ async def lifespan(app: FastAPI):
         lambda: safe_run_job(sync_mitre_data, "MITRE Sync"),
         'interval', days=7, misfire_grace_time=300, id="mitre_sync"
     )
+    scheduler.add_job(
+        lambda: safe_run_job(sync_ip_blocklists, "IP Blocklist Sync"),
+        'interval', hours=1, next_run_time=datetime.now(),
+        misfire_grace_time=300, id="ip_blocklist_sync"
+    )
 
     scheduler.start()
 
     yield
-    scheduler.shutdown()
+    if scheduler.running:  # already stopped if /api/system/shutdown ran
+        scheduler.shutdown()
 
 
 app = FastAPI(title="ThreatLens API", version="2.0.0", lifespan=lifespan)
@@ -787,10 +815,11 @@ async def get_ip_reputation_endpoint(ip: str, machine_id: Optional[int] = None, 
         asset = db.query(models.Asset).filter(models.Asset.id == machine_id).first()
         if asset: machine_hostname = asset.name
             
-    data = check_ip_reputation(ip, db_session=db, machine_id=machine_id, machine_hostname=machine_hostname)
-    if not data:
-        raise HTTPException(status_code=500, detail="Error checking IP reputation")
-    
+    try:
+        data = check_ip_reputation(ip, db_session=db, machine_id=machine_id, machine_hostname=machine_hostname)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Not a valid IP address")
+
     # Broadcast if malicious
     if data.get("is_malicious"):
         await manager.broadcast(json.dumps({
@@ -799,6 +828,8 @@ async def get_ip_reputation_endpoint(ip: str, machine_id: Optional[int] = None, 
                 "machine_hostname": machine_hostname or "Unknown",
                 "destination_ip": ip,
                 "abuse_score": data.get("score"),
+                "source": data.get("source"),
+                "reference": data.get("reference"),
                 "country": data.get("country"),
                 "isp": data.get("isp"),
                 "last_seen": str(datetime.now(timezone.utc))
@@ -809,18 +840,32 @@ async def get_ip_reputation_endpoint(ip: str, machine_id: Optional[int] = None, 
 
 @app.post("/api/ingest/nvd")
 async def ingest_nvd():
-    threading.Thread(target=lambda: safe_run_job(lambda: run_nvd_sync(notify), "Manual NVD Sync")).start()
+    threading.Thread(name=JOB_THREAD, target=lambda: safe_run_job(lambda: run_nvd_sync(notify), "Manual NVD Sync")).start()
     return {"status": "started"}
 
 @app.post("/api/ingest/otx")
 async def ingest_otx():
-    threading.Thread(target=lambda: safe_run_job(lambda db: fetch_osint_alerts(db, notify), "Manual OSINT Sync")).start()
+    threading.Thread(name=JOB_THREAD, target=lambda: safe_run_job(lambda db: fetch_osint_alerts(db, notify), "Manual OSINT Sync")).start()
     return {"status": "started"}
 
 @app.post("/api/ingest/mitre")
 async def ingest_mitre():
-    threading.Thread(target=lambda: safe_run_job(sync_mitre_data, "Manual MITRE Sync")).start()
+    threading.Thread(name=JOB_THREAD, target=lambda: safe_run_job(sync_mitre_data, "Manual MITRE Sync")).start()
     return {"status": "started"}
+
+@app.post("/api/system/shutdown")
+def shutdown_backend():
+    """Clean exit for the desktop app's quit: let running syncs and background jobs finish,
+    close the database, then end the process (a hard kill mid-write is what corrupts the database files)."""
+    if app_scheduler is not None and app_scheduler.running:
+        app_scheduler.shutdown(wait=True)
+    for t in threading.enumerate():
+        if t.name == JOB_THREAD and t is not threading.current_thread():
+            t.join(timeout=120)
+    db.engine.dispose()
+    threading.Timer(0.5, os._exit, args=(0,)).start()  # after this response is sent
+    return {"status": "stopped"}
+
 
 @app.get("/api/scheduler/logs")
 async def get_scheduler_logs(db: Session = Depends(db.get_db)):
@@ -1202,6 +1247,13 @@ def _map_country(name: str):
     return COUNTRY_ALIASES.get(name.lower()) or next((k for k in COUNTRY_COORDS if k.lower() == name.lower()), None)
 
 
+def _iso_utc(dt):
+    """ISO time with an explicit UTC offset; SQLite hands back naive UTC, which browsers would read as local."""
+    if dt is None:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).isoformat()
+
+
 @app.get("/api/attack-map")
 async def get_attack_map(db: Session = Depends(db.get_db)):
     """Countries that OTX pulses list as targeted, with the adversaries and sectors those pulses name.
@@ -1275,22 +1327,23 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
         ).order_by(models.Incident.created_at.desc()).all()
         asset_pins.append({
             "id": asset.id, "name": asset.name, "os": asset.os, "ip_address": asset.ip_address,
-            "status": asset.status, "last_seen": str(asset.last_seen) if asset.last_seen else None,
+            "status": asset.status, "last_seen": _iso_utc(asset.last_seen),
             "lat": asset.latitude, "lng": asset.longitude, "location_label": asset.location_label,
             "highest_severity": max((i.severity for i in open_incidents),
                                     key=lambda sev: severity_rank.get(sev, 0), default=None),
             "open_incidents": [{"id": i.id, "type": i.type, "severity": i.severity, "details": i.details,
-                                "created_at": str(i.created_at)} for i in open_incidents],
+                                "created_at": _iso_utc(i.created_at)} for i in open_incidents],
         })
 
     # Malicious IPs, placed approximately by GeoIP (attacker infrastructure, not targets)
     ip_areas = []
     seen_ips = set()
     sources = [(c.destination_ip, {"abuse_score": c.abuse_score, "machine": c.machine_hostname,
-                                   "last_seen": str(c.last_seen), "source": "Flagged connection"})
+                                   "last_seen": _iso_utc(c.last_seen), "source": "Flagged connection",
+                                   "detected_by": c.source, "reference": c.reference})
                for c in db.query(models.FlaggedConnection).all()]
-    sources += [(a.indicator, {"abuse_score": None, "machine": None, "last_seen": str(a.created_at),
-                               "source": "IOC Hunter"})
+    sources += [(a.indicator, {"abuse_score": None, "machine": None, "last_seen": _iso_utc(a.created_at),
+                               "source": "IOC Hunter", "detected_by": None, "reference": None})
                 for a in alerts if a.source == "IOC Hunter" and (a.type or "").upper() == "IP"]
     for ip, info in sources:
         if ip in seen_ips:
@@ -1393,21 +1446,25 @@ async def ioc_lookup(request: Request, db: Session = Depends(db.get_db)):
     # â”€â”€ 2. AbuseIPDB (IPs only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if ioc_type == "ip":
         try:
-            abuse = check_ip_reputation(raw, db_session=db)
-            if abuse and "error" not in abuse:
+            rep_ip = check_ip_reputation(raw, db_session=db)
+            listed = rep_ip["source"] not in (None, "AbuseIPDB")
+            results["sources"]["blocklist"] = (
+                {"found": True, "list": rep_ip["source"], "network": rep_ip["network"], "reference": rep_ip["reference"]}
+                if listed else {"found": False})
+            if listed:
+                results["tags"].append(f"Listed on {rep_ip['source']}")
+            elif "error" in rep_ip:
+                results["sources"]["abuseipdb"] = {"error": rep_ip["error"]}
+            elif rep_ip["source"] == "AbuseIPDB":
                 results["sources"]["abuseipdb"] = {
-                    "score":        abuse.get("score", 0),
-                    "is_malicious": abuse.get("is_malicious", False),
-                    "country":      abuse.get("country"),
-                    "isp":          abuse.get("isp"),
-                    "usage_type":   abuse.get("usage_type"),
+                    "score":        rep_ip["score"],
+                    "is_malicious": rep_ip["is_malicious"],
+                    "country":      rep_ip["country"],
+                    "isp":          rep_ip["isp"],
+                    "usage_type":   rep_ip["usage_type"],
                 }
-                if abuse.get("is_malicious"):
-                    results["tags"].append(f"AbuseIPDB score {abuse['score']}/100")
-            elif abuse and "error" in abuse:
-                results["sources"]["abuseipdb"] = {"error": abuse["error"]}
-            else:
-                results["sources"]["abuseipdb"] = {"error": "No response"}
+                if rep_ip["is_malicious"]:
+                    results["tags"].append(f"AbuseIPDB score {rep_ip['score']}/100")
         except Exception as e:
             results["sources"]["abuseipdb"] = {"error": str(e)}
 
@@ -1457,6 +1514,7 @@ async def ioc_lookup(request: Request, db: Session = Depends(db.get_db)):
 
     # â”€â”€ 4. Compute unified verdict â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     is_malicious = (
+        results["sources"].get("blocklist", {}).get("found") or
         results["sources"].get("abuseipdb", {}).get("is_malicious") or
         results["sources"].get("virustotal", {}).get("verdict") == "Malicious" or
         results["sources"].get("virustotal", {}).get("malicious", 0) > 0

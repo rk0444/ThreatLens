@@ -5,7 +5,8 @@
   "description": "Unified Cybersecurity Platform",
   "author": "ThreatLens Team",
   "scripts": {
-    "dev": "concurrently \"npm run frontend:dev\" \"npm run backend:dev\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev": "concurrently -k \"npm run frontend:dev\" \"npm run backend:dev\" \"npm run monitor:dev\" \"wait-on http://localhost:5173 http-get://127.0.0.1:8000 && electron .\"",
+    "monitor:dev": "wait-on http-get://127.0.0.1:8000 && .venv\\Scripts\\python -u agent\\network_monitor.py",
     "frontend:dev": "cd frontend && npm run dev",
     "backend:dev": ".venv\\Scripts\\python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 --reload --reload-dir backend --reload-exclude \"*.sqlite\" --reload-exclude \"*.sqlite-wal\" --reload-exclude \"*.sqlite-shm\"",
     "build": "cd frontend && npm run build && cd .. && electron-builder",
@@ -26,20 +27,32 @@
       {
         "from": "backend",
         "to": "backend",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*",
+          "!**/*.sqlite*",
+          "!**/recovery_*/**",
+          "!**/*.mmdb",
+          "!**/__pycache__/**",
+          "!tests/**",
+          "!**/*.bak"
+        ]
+      },
+      {
+        "from": "agent",
+        "to": "agent",
+        "filter": [
+          "network_monitor.py"
+        ]
       }
     ],
     "win": {
-      "target": "nsis",
-      "icon": "assets/icon.ico"
+      "target": "nsis"
     },
     "mac": {
-      "target": "dmg",
-      "icon": "assets/icon.icns"
+      "target": "dmg"
     },
     "linux": {
-      "target": "AppImage",
-      "icon": "assets/icon.png"
+      "target": "AppImage"
     }
   },
   "devDependencies": {

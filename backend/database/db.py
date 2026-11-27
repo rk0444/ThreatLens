@@ -3,8 +3,11 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 
-# Database file path
-DB_PATH = os.path.join(os.path.dirname(__file__), "threatlens.sqlite")
+# Database file path: next to the code in development; the installed app points
+# THREATLENS_DATA_DIR at its user-data folder (the program folder is read-only)
+DATA_DIR = os.getenv("THREATLENS_DATA_DIR") or os.path.dirname(__file__)
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, "threatlens.sqlite")
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 from sqlalchemy import event

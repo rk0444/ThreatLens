@@ -6,6 +6,8 @@ Run with venv python:
   E:\Project\ThreatLens\.venv\Scripts\python agent\network_monitor.py
 """
 
+import ipaddress
+import sys
 import psutil
 import time
 import requests
@@ -20,6 +22,7 @@ CHECK_IP_URL   = f"{API_BASE}/api/check-ip"
 ASSETS_URL     = f"{API_BASE}/api/assets"
 POLL_INTERVAL  = 10      # seconds between scans
 DEDUP_TTL      = 300     # seconds before the same IP can re-alert (5 min)
+CHECK_TTL      = 600     # seconds before asking the backend about the same IP again
 
 HOSTNAME = socket.gethostname()
 
@@ -29,6 +32,7 @@ BENIGN_PORTS = {80, 443, 22, 3389, 53, 123, 8000, 5173}
 # â”€â”€ Deduplication â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # { ip: last_reported_timestamp }
 _seen: dict[str, float] = {}
+_checked: dict[str, float] = {}  # every IP asked about, malicious or not
 
 def _already_reported(ip: str) -> bool:
     last = _seen.get(ip)
@@ -45,6 +49,8 @@ def _evict_stale():
     stale = [ip for ip, ts in _seen.items() if (now - ts) >= DEDUP_TTL]
     for ip in stale:
         del _seen[ip]
+    for ip in [ip for ip, ts in _checked.items() if (now - ts) >= CHECK_TTL]:
+        del _checked[ip]
 
 # â”€â”€ Asset ID lookup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _machine_id: int | None = None
@@ -90,24 +96,35 @@ def get_machine_id() -> int:
     return 1
 
 # â”€â”€ IP Reputation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-def check_ip_reputation(ip: str) -> bool:
-    """Returns True if the IP is flagged as malicious by the backend."""
-    # Skip private / loopback ranges immediately
-    if (ip.startswith("127.") or ip.startswith("192.168.")
-            or ip.startswith("10.") or ip.startswith("172.")):
-        return False
-
+def check_ip_reputation(ip: str):
+    """The backend's verdict dict for a public IP, or None (private IP, checked recently, or backend error)."""
     try:
-        resp = requests.get(f"{CHECK_IP_URL}/{ip}", timeout=5)
+        if not ipaddress.ip_address(ip).is_global:  # private, loopback, link-local, reserved
+            return None
+    except ValueError:
+        return None
+    last = _checked.get(ip)
+    if last and (time.time() - last) < CHECK_TTL:
+        return None
+    try:
+        resp = requests.get(f"{CHECK_IP_URL}/{ip}", params={"machine_id": get_machine_id()}, timeout=10)
         if resp.status_code == 200:
+            _checked[ip] = time.time()
             data = resp.json()
-            return bool(data.get("is_malicious", False))
-        else:
-            print(f"[!] check-ip returned {resp.status_code} for {ip}")
+            if data.get("error"):
+                print(f"[!] {ip}: {data['error']}")
+            return data
+        print(f"[!] check-ip returned {resp.status_code} for {ip}")
     except Exception as e:
         print(f"[!] Error calling reputation API for {ip}: {e}")
+    return None
 
-    return False
+
+def describe_source(verdict: dict) -> str:
+    source, reference = verdict.get("source"), verdict.get("reference")
+    if source == "AbuseIPDB":
+        return f"AbuseIPDB score {verdict.get('score')}/100"
+    return f"listed on {source}" + (f" ({reference})" if reference else "")
 
 # â”€â”€ Incident Reporting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def report_incident(
@@ -179,7 +196,8 @@ def check_network():
         if _already_reported(ip):
             continue
 
-        if check_ip_reputation(ip):
+        verdict = check_ip_reputation(ip)
+        if verdict and verdict.get("is_malicious"):
             flagged += 1
             _mark_reported(ip)
             report_incident(
@@ -188,7 +206,7 @@ def check_network():
                 network_connection=f"{ip}:{port}",
                 details=(
                     f"Process '{process_name or 'unknown'}' (PID {conn.pid}) "
-                    f"established connection to malicious IP {ip} on port {port}"
+                    f"established connection to malicious IP {ip} on port {port}: {describe_source(verdict)}"
                 ),
                 process_name=process_name,
             )
@@ -198,6 +216,8 @@ def check_network():
 
 # â”€â”€ Entry Point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if __name__ == "__main__":
+    # Windows consoles and redirected logs are often not UTF-8; a non-ASCII print must not abort a scan
+    sys.stdout.reconfigure(errors="replace")
     print(f"[*] ThreatLens Network Monitor starting on '{HOSTNAME}'")
     print(f"[*] Backend: {API_BASE} | Poll: {POLL_INTERVAL}s | Dedup TTL: {DEDUP_TTL}s")
 
