@@ -10,7 +10,7 @@ const GlobalThreats = () => {
   const [cves, setCves] = useState([]);
   const [selectedCve, setSelectedCve] = useState(null);
   const [graphFocus, setGraphFocus] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [loadedQuery, setLoadedQuery] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [limit, setLimit] = useState(50);
   const [filters, setFilters] = useState({
@@ -21,8 +21,7 @@ const GlobalThreats = () => {
   });
 
   const sortOptions = [
-    { value: 'Severity', label: 'Severity' },
-    { value: 'Risk Score', label: 'Risk Score' },
+    { value: 'Severity', label: 'Risk (severity)' },
     { value: 'EPSS %', label: 'EPSS %' },
     { value: 'Published Date', label: 'Published Date' },
     { value: 'CVSS Score', label: 'CVSS Score' },
@@ -50,44 +49,43 @@ const GlobalThreats = () => {
     return `${products[0]}, ${products[1]} +${products.length - 2} more`;
   };
 
-  const fetchCves = () => {
-    setLoading(true);
-    // The server picks which CVEs to send (top 50 by this sort/filter); the client only orders them.
-    const sortParam = { 'Severity': 'risk_score', 'Risk Score': 'risk_score', 'EPSS %': 'epss', 'Published Date': 'published', 'CVSS Score': 'cvss' };
-    const params = new URLSearchParams({ sort: sortParam[filters.sortBy] });
-    if (filters.myAssetsOnly) params.append('affected_only', 'true');
-    if (filters.severity !== 'All Severities') params.append('band', filters.severity);
-    if (filters.epssMin > 0) params.append('epss_pct_min', filters.epssMin);
-    params.append('limit', limit);
+  // Filters shared with the graph; the table adds sort and paging. The server picks which CVEs to send.
+  const filterParams = new URLSearchParams();
+  if (filters.myAssetsOnly) filterParams.append('affected_only', 'true');
+  if (filters.severity !== 'All Severities') filterParams.append('band', filters.severity);
+  if (filters.epssMin > 0) filterParams.append('epss_pct_min', filters.epssMin);
+  const filterQuery = filterParams.toString();
+  const sortParam = { 'Severity': 'risk_score', 'EPSS %': 'epss', 'Published Date': 'published', 'CVSS Score': 'cvss' };
+  const cveQuery = `${filterQuery}&sort=${sortParam[filters.sortBy]}&limit=${limit}`;
+  // Loading until the rows for the current query have arrived (a live refresh keeps the rows visible)
+  const loading = loadedQuery !== cveQuery;
 
-    fetch(`http://127.0.0.1:8000/api/cves?${params.toString()}`)
+  useEffect(() => {
+    const load = () => fetch(`http://127.0.0.1:8000/api/cves?${cveQuery}`)
       .then(res => res.json())
       .then(data => {
         setCves(Array.isArray(data) ? data : (data.cves || []));
         setLastUpdated(new Date());
-        setLoading(false);
+        setLoadedQuery(cveQuery);
       })
       .catch(err => {
         console.error('Fetch error:', err);
-        setLoading(false);
+        setLoadedQuery(cveQuery);
       });
-  };
-
-  useEffect(() => {
-    fetchCves();
+    load();
 
     const socket = new WebSocket('ws://127.0.0.1:8000/ws/events');
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
         // New CVEs were ingested: refetch so they go through the same filters and sort
-        if (data.type === 'CVES_UPDATED') fetchCves();
+        if (data.type === 'CVES_UPDATED') load();
       } catch (e) {
         console.error("WebSocket message error:", e);
       }
     };
     return () => socket.close();
-  }, [filters.myAssetsOnly, filters.severity, filters.sortBy, filters.epssMin, limit]);
+  }, [cveQuery]);
 
   // Filtering happens server-side; this only adds tie-breakers to the server's order
   const sortedCves = [...cves].sort((a, b) => {
@@ -98,7 +96,7 @@ const GlobalThreats = () => {
     const epssA = a.epss_score || 0;
     const epssB = b.epss_score || 0;
 
-    if (filters.sortBy === 'Severity' || filters.sortBy === 'Risk Score') {
+    if (filters.sortBy === 'Severity') {
       if (scoreA !== scoreB) return scoreB - scoreA;
       return dateB - dateA;
     }
@@ -177,7 +175,7 @@ const GlobalThreats = () => {
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '2rem' }}>
         <div style={{ position: 'relative' }}>
-          <ThreatGraph highlightedNodeId={graphFocus} />
+          <ThreatGraph highlightedNodeId={graphFocus} filterQuery={filterQuery} />
           {graphFocus && (
             <button 
               onClick={() => setGraphFocus(null)}
@@ -227,7 +225,9 @@ const GlobalThreats = () => {
                     <td colSpan="9" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
                       {filters.myAssetsOnly
                         ? 'No CVEs match your assets. Matching uses the products NVD lists for each CVE against the software your assets report.'
-                        : 'No CVEs match these filters.'}
+                        : filters.severity === 'Critical'
+                          ? "No CRITICAL CVEs. Critical means a CVE on CISA's KEV list that affects one of your assets."
+                          : 'No CVEs match these filters.'}
                     </td>
                   </tr>
                 ) : (

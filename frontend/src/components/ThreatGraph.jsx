@@ -1,15 +1,26 @@
-import React, { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
 
-const ThreatGraph = ({ highlightedNodeId }) => {
+// filterQuery: the Global Threats filters as a query string, so the graph shows the same CVE set as the table
+const ThreatGraph = ({ highlightedNodeId, filterQuery = '' }) => {
   const [data, setData] = useState({ nodes: [], links: [] });
   const [loading, setLoading] = useState(true);
+  const [width, setWidth] = useState(800);
   const containerRef = useRef();
   const fgRef = useRef();
   const hasZoomedRef = useRef(false);
 
+  // Track the container width (reading the ref during render is unreliable)
   useEffect(() => {
-    fetch('http://127.0.0.1:8000/api/cves/graph')
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(([entry]) => setWidth(Math.floor(entry.contentRect.width)));
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    fetch(`http://127.0.0.1:8000/api/cves/graph?${filterQuery}`)
       .then(res => res.json())
       .then(data => {
         if (data && data.nodes && data.links) setData(data);
@@ -20,7 +31,7 @@ const ThreatGraph = ({ highlightedNodeId }) => {
         console.error(err);
         setLoading(false);
       });
-  }, []);
+  }, [filterQuery]);
 
   const focusInGraph = Boolean(highlightedNodeId) && data.nodes.some(n => n.id === highlightedNodeId);
 
@@ -42,10 +53,10 @@ const ThreatGraph = ({ highlightedNodeId }) => {
 
   return (
     <div className="glass-panel" style={{ height: '500px', overflow: 'hidden', position: 'relative' }} ref={containerRef}>
-      <div className="label-small" style={{ position: 'absolute', top: '15px', left: '15px', zIndex: 10 }}>Threat Intelligence Graph · top 20 CVEs by risk → weakness type (CWE, from NVD)</div>
+      <div className="label-small" style={{ position: 'absolute', top: '15px', left: '15px', zIndex: 10 }}>Threat Intelligence Graph · top 20 CVEs by risk matching the filters → weakness type (CWE, from NVD)</div>
       {highlightedNodeId && !loading && !focusInGraph && (
         <div className="label-small" style={{ position: 'absolute', top: '40px', left: '15px', zIndex: 10, color: 'var(--text-secondary)' }}>
-          {highlightedNodeId} is not among the top 20 CVEs shown in this graph.
+          {highlightedNodeId} is not among the top 20 CVEs shown in this graph (with the current filters).
         </div>
       )}
       {loading ? (
@@ -80,7 +91,7 @@ const ThreatGraph = ({ highlightedNodeId }) => {
             ctx.fillText(label, node.x, node.y);
           }}
           linkColor={() => 'rgba(184, 146, 42, 0.35)'}          backgroundColor="transparent"
-          width={containerRef.current?.offsetWidth || 800}
+          width={width}
           height={500}
         />
       )}

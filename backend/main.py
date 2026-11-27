@@ -27,7 +27,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from backend.database import db, models, schemas
-from backend.services.nvd import fetch_latest_cves
+from backend.services.nvd import run_nvd_sync
 from backend.services.asset_filter import rematch_all_cves, matched_software
 from backend.services.osint import fetch_osint_alerts
 from backend.services.abuseipdb import check_ip_reputation
@@ -40,17 +40,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 import threading
 import traceback
-
-
-def run_nvd_sync():
-    """Wrapper so APScheduler can call fetch_latest_cves with a managed DB session."""
-    session = SessionLocal()
-    try:
-        fetch_latest_cves(session)
-    except Exception as e:
-        print(f"[nvd_sync] failed: {e}")
-    finally:
-        session.close()
 
 
 # Real-time event manager
@@ -149,7 +138,7 @@ async def lifespan(app: FastAPI):
         misfire_grace_time=300, id="nvd_sync"
     )
     scheduler.add_job(
-        lambda: safe_run_job(lambda db: fetch_osint_alerts(db, manager), "OSINT Sync"),
+        lambda: safe_run_job(lambda db: fetch_osint_alerts(db, notify), "OSINT Sync"),
         'interval', minutes=30, next_run_time=datetime.now(),
         misfire_grace_time=300, id="osint_sync"
     )
@@ -404,6 +393,22 @@ async def generate_morning_brief(db: Session = Depends(db.get_db)):
     return brief
 
 
+def _filtered_cves(db: Session, severity=None, epss_min=None, epss_pct_min=None, band=None, affected_only=False):
+    """CVE query with the Global Threats filters (shared by the table and the graph)."""
+    query = db.query(models.CVE)
+    if affected_only:
+        query = query.filter(models.CVE.asset_affected == True)
+    if severity:
+        query = query.filter(models.CVE.cvss_score >= severity)
+    if epss_min:
+        query = query.filter(models.CVE.epss_score >= epss_min)
+    if epss_pct_min:
+        query = query.filter(models.CVE.epss_percentile >= epss_pct_min)
+    if band:
+        query = query.filter(models.CVE.risk_band == band.upper())
+    return query
+
+
 @app.get("/api/cves", response_model=List[schemas.CVEResponse])
 async def get_cves(
     skip: int = 0,
@@ -416,18 +421,7 @@ async def get_cves(
     affected_only: bool = False,
     db: Session = Depends(db.get_db),
 ):
-    query = db.query(models.CVE)
-    if affected_only:
-        query = query.filter(models.CVE.asset_affected == True)
-    if severity:
-        query = query.filter(models.CVE.cvss_score >= severity)
-    if epss_min:
-        query = query.filter(models.CVE.epss_score >= epss_min)
-    if epss_pct_min:
-        query = query.filter(models.CVE.epss_percentile >= epss_pct_min)
-    if band:
-        query = query.filter(models.CVE.risk_band == band.upper())
-
+    query = _filtered_cves(db, severity, epss_min, epss_pct_min, band, affected_only)
     sort_columns = {
         "risk_score": models.CVE.risk_score,
         "epss": models.CVE.epss_score,
@@ -443,10 +437,15 @@ async def get_cves(
 
 
 @app.get("/api/cves/graph")
-async def get_threat_graph(db: Session = Depends(db.get_db)):
-    # Top 20 CVEs by risk, linked to the weakness types (CWE) NVD publishes for them.
+async def get_threat_graph(
+    epss_pct_min: Optional[float] = None,
+    band: Optional[str] = None,
+    affected_only: bool = False,
+    db: Session = Depends(db.get_db),
+):
+    # Top 20 CVEs by risk within the page's filters, linked to the weakness types (CWE) NVD publishes.
     cves = (
-        db.query(models.CVE)
+        _filtered_cves(db, epss_pct_min=epss_pct_min, band=band, affected_only=affected_only)
         .order_by(models.CVE.risk_score.desc().nullslast())
         .limit(20)
         .all()
@@ -813,12 +812,12 @@ async def get_ip_reputation_endpoint(ip: str, machine_id: Optional[int] = None, 
 
 @app.post("/api/ingest/nvd")
 async def ingest_nvd():
-    threading.Thread(target=lambda: safe_run_job(run_nvd_sync, "Manual NVD Sync")).start()
+    threading.Thread(target=lambda: safe_run_job(lambda: run_nvd_sync(notify), "Manual NVD Sync")).start()
     return {"status": "started"}
 
 @app.post("/api/ingest/otx")
 async def ingest_otx():
-    threading.Thread(target=lambda: safe_run_job(lambda db: fetch_osint_alerts(db, manager), "Manual OSINT Sync")).start()
+    threading.Thread(target=lambda: safe_run_job(lambda db: fetch_osint_alerts(db, notify), "Manual OSINT Sync")).start()
     return {"status": "started"}
 
 @app.post("/api/ingest/mitre")

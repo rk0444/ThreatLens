@@ -1,3 +1,4 @@
+import json
 import requests
 import os
 from sqlalchemy.orm import Session
@@ -9,7 +10,7 @@ load_dotenv()
 OTX_API_KEY = os.getenv("OTX_API_KEY")
 OTX_API_URL = "https://otx.alienvault.com/api/v1/pulses/subscribed"
 
-def fetch_osint_alerts(db_session: Session, websocket_manager=None):
+def fetch_osint_alerts(db_session: Session, notify=None):
     if not OTX_API_KEY:
         return
 
@@ -47,18 +48,16 @@ def fetch_osint_alerts(db_session: Session, websocket_manager=None):
                 db_session.add(alert)
                 db_session.commit()
                 
-                # Push via WebSocket
-                if websocket_manager:
-                    import asyncio
-                    import json
-                    asyncio.run(websocket_manager.broadcast(json.dumps({
+                # Push to open pages (notify hops onto the app's event loop; this runs in a scheduler thread)
+                if notify:
+                    notify(json.dumps({
                         "type": "OSINT_ALERT",
                         "data": {
                             "indicator": indicator,
                             "description": pulse.get("description"),
                             "source": "AlienVault OTX"
                         }
-                    })))
+                    }))
                     
     except Exception as e:
         print(f"Error fetching OSINT alerts: {e}")

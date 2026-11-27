@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { X, ShieldAlert, Globe, ExternalLink, Brain, AlertTriangle, Copy, CheckCircle } from 'lucide-react';
 
-import { getRiskScore, getRiskColor } from '../utils/riskScore';
+import { getRiskColor } from '../utils/riskScore';
 
 const getMitreStageColor = (stage) => {
   const colors = {
@@ -32,8 +32,6 @@ const copyToClipboard = async (text, commandId) => {
 };
 
 export default function CveDrawer({ cve, onClose, footer }) {
-  const [actors, setActors] = useState([]);
-  const [loadingActors, setLoadingActors] = useState(false);
   const [aiSummary, setAiSummary] = useState(null);
   const [loadingAiSummary, setLoadingAiSummary] = useState(false);
   const [correlationData, setCorrelationData] = useState(null);
@@ -42,15 +40,6 @@ export default function CveDrawer({ cve, onClose, footer }) {
 
   useEffect(() => {
     if (cve) {
-      setLoadingActors(true);
-      fetch(`http://127.0.0.1:8000/api/cves/${cve.cve_id}/threat-actors`)
-        .then(r => r.json())
-        .then(data => {
-          setActors(data);
-          setLoadingActors(false);
-        })
-        .catch(() => setLoadingActors(false));
-
       // Fetch AI summary
       setLoadingAiSummary(true);
       fetch(`http://127.0.0.1:8000/api/cves/${cve.cve_id}/ai-summary`)
@@ -87,7 +76,15 @@ export default function CveDrawer({ cve, onClose, footer }) {
         </div>
         
         <div className="drawer-content">
-          {cve.actively_exploited && (
+          {!cve.cisa_kev && cve.actively_exploited && (
+            <div style={{ background: 'rgba(246, 173, 85, 0.12)', border: '1px solid #f6ad55', borderRadius: '4px', padding: '1rem', marginBottom: '2rem', color: '#f6ad55', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+              <AlertTriangle size={24} />
+              <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>
+                PUBLIC EXPLOIT AVAILABLE — NVD links an exploit; no confirmed exploitation in the wild
+              </div>
+            </div>
+          )}
+          {cve.cisa_kev && (
             <div style={{ background: 'rgba(229, 62, 62, 0.15)', border: '1px solid #fc8181', borderRadius: '4px', padding: '1rem', marginBottom: '2rem', color: '#fc8181', display: 'flex', alignItems: 'center', gap: '1rem' }}>
               <ShieldAlert size={24} />
               <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>
@@ -98,10 +95,10 @@ export default function CveDrawer({ cve, onClose, footer }) {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', marginBottom: '2rem' }}>
             <div style={{ position: 'relative' }}>
-              <div className="risk-circle-large" style={{ border: `4px solid ${getRiskColor(getRiskScore(cve))}` }}>
-  {getRiskScore(cve)}
+              <div className="risk-circle-large" style={{ border: `4px solid ${getRiskColor(Math.floor(cve.risk_score ?? 0))}` }}>
+  {Math.floor(cve.risk_score ?? 0)}
               </div>
-              {cve.actively_exploited && (
+              {cve.cisa_kev && (
                 <div style={{ position: 'absolute', top: -5, right: -5, background: 'var(--danger)', borderRadius: '50%', width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 'bold' }}>!</div>
               )}
             </div>
@@ -294,35 +291,6 @@ export default function CveDrawer({ cve, onClose, footer }) {
             </div>
           )}
 
-          <div className="asset-section" style={{ marginTop: '2rem' }}>
-            <div className="label-small">Attribution: Threat Actors</div>
-            {loadingActors ? (
-              <div className="skeleton" style={{ height: '100px', marginTop: '1rem' }}></div>
-            ) : actors.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '1rem' }}>
-                {actors.map((item, idx) => (
-                  <div key={idx} style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border)', borderRadius: '4px', padding: '1rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <div>
-                        <div style={{ fontWeight: 600, color: 'var(--accent-gold)' }}>{item.group.name}</div>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Origin: {item.group.country} | Motivation: {item.group.motivation}</div>
-                      </div>
-                      <span className={`severity-badge ${item.confidence === 'confirmed' ? 'severity-critical' : 'severity-medium'}`}>
-                        {item.confidence.toUpperCase()}
-                      </span>
-                    </div>
-                    {item.technique_name && (
-                      <div style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
-                        <span style={{ color: 'var(--text-muted)' }}>Primary Technique:</span> {item.technique_name} ({item.technique_id})
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{ marginTop: '0.5rem', color: 'var(--text-muted)', fontSize: '0.9rem' }}>No direct attribution mapped for this CVE yet.</div>
-            )}
-          </div>
 
           <div style={{ marginTop: '2rem' }}>
              <a 
