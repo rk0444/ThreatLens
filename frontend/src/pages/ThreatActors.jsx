@@ -174,7 +174,8 @@ const ThreatActors = () => {
                   
                   {/* Clear Button */}
                   <div style={{ width: '1px', height: '20px', background: 'rgba(184, 146, 42, 0.2)' }} />
-                  <button 
+                  <button
+                    aria-label="Clear search"
                     onClick={() => setSearchTerm('')}
                     style={{ background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '0 12px' }}
                   >
@@ -256,6 +257,7 @@ const ThreatActors = () => {
             @media (max-width: 899px) { .actor-grid { grid-template-columns: 1fr !important; } }
             .actor-card { border: 1px solid rgba(184,146,42,0.15); transition: border-color 200ms ease, box-shadow 200ms ease; }
             .actor-card:hover { border-color: rgba(184,146,42,0.5) !important; box-shadow: 0 0 16px rgba(184,146,42,0.1) !important; }
+            .actor-card:focus-visible { outline: 2px solid #B8922A; outline-offset: 2px; }
             @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
           `}</style>
 
@@ -264,7 +266,7 @@ const ThreatActors = () => {
               <div key={i} className="glass-panel skeleton" style={{ height: '160px', borderRadius: '6px' }} />
             ))
           ) : filteredActors.map(actor => {
-            const techCount = actor.techniques?.length ?? 0;
+            const techCount = actor.technique_count ?? 0;
 
             return (
               <div
@@ -278,7 +280,13 @@ const ThreatActors = () => {
                   padding: 0,
                   overflow: 'hidden',
                 }}
+                role="button"
+                tabIndex={0}
+                aria-label={`${actor.name} (${actor.mitre_id}), ${techCount} ATT&CK techniques`}
                 onClick={() => loadActorDetails(actor.id)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); loadActorDetails(actor.id); }
+                }}
               >
                 {/* ── ROW 1: Name ── */}
                 <div style={{ padding: '16px 16px 12px 16px', fontWeight: 700, fontSize: '1rem', color: 'var(--accent-gold)' }}>
@@ -335,7 +343,7 @@ const ThreatActors = () => {
                 <div className="label-small">{selectedActor.group.mitre_id}</div>
                 <h2>{selectedActor.group.name}</h2>
               </div>
-              <button className="close-btn" onClick={() => setSelectedActor(null)}>✕</button>
+              <button className="close-btn" aria-label="Close" onClick={() => setSelectedActor(null)}>✕</button>
             </div>
 
             <div className="drawer-content">
@@ -353,11 +361,15 @@ const ThreatActors = () => {
               <div className="description-box" style={{ marginBottom: '2rem' }}>
                 <div className="label-small">Description</div>
                 <p style={{ lineHeight: 1.6 }}>{selectedActor.group.description || 'No detailed description available.'}</p>
-                {selectedActor.group.aliases?.length > 0 && (
-                  <div style={{ marginTop: '1rem', color: 'var(--text-muted)' }}>
-                    <strong>Known Aliases:</strong> {selectedActor.group.aliases.join(', ')}
-                  </div>
-                )}
+                {(() => {
+                  // MITRE lists the group's own name as its first alias
+                  const aliases = (selectedActor.group.aliases || []).filter(a => a !== selectedActor.group.name);
+                  return aliases.length > 0 && (
+                    <div style={{ marginTop: '1rem', color: 'var(--text-muted)' }}>
+                      <strong>Known Aliases:</strong> {aliases.join(', ')}
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="label-small">ATT&amp;CK Techniques ({selectedActor.techniques.length})</div>

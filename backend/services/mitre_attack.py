@@ -38,8 +38,11 @@ def sync_mitre_data(db: Session):
         try:
             response = requests.get(MITRE_URL, timeout=60)
             response.raise_for_status()
-            with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+            # Write a temp file, then swap it in: an interrupted write never leaves a half file
+            # with a fresh date (which would skip downloads for 7 days).
+            with open(CACHE_FILE + ".tmp", 'w', encoding='utf-8') as f:
                 f.write(response.text)
+            os.replace(CACHE_FILE + ".tmp", CACHE_FILE)
             print("[MITRE] Download complete.")
         except Exception as e:
             print(f"[MITRE][ERROR] Download failed: {e}")
@@ -51,6 +54,7 @@ def sync_mitre_data(db: Session):
             stix_data = json.load(f)
     except Exception as e:
         print(f"[MITRE][ERROR] Failed to read cache: {e}")
+        os.remove(CACHE_FILE)  # unreadable: download a fresh copy on the next run
         return
 
     objects = stix_data.get("objects", [])
@@ -58,6 +62,9 @@ def sync_mitre_data(db: Session):
     # --- Build lookup dicts ---
     intrusion_sets = {}   # stix_id -> {name, mitre_id, description, aliases}
     attack_patterns = {}  # stix_id -> {tid, name, tactic}
+    # Tactic display names as MITRE publishes them, e.g. "credential-access" -> "Credential Access"
+    tactic_names = {o["x_mitre_shortname"]: o["name"] for o in objects
+                    if o.get("type") == "x-mitre-tactic" and o.get("x_mitre_shortname") and o.get("name")}
 
     for obj in objects:
         t = obj.get("type")
@@ -81,8 +88,15 @@ def sync_mitre_data(db: Session):
                 attack_patterns[obj["id"]] = {
                     "tid": tid,
                     "name": obj.get("name", ""),
-                    "tactic": ", ".join(p for p in phases if p),  # a technique can serve several tactics
+                    "tactic": ", ".join(tactic_names.get(p, p) for p in phases if p),  # can serve several tactics
                 }
+
+    # Sub-techniques get their parent's name, as on attack.mitre.org ("OS Credential Dumping: LSASS Memory")
+    names_by_tid = {ap["tid"]: ap["name"] for ap in attack_patterns.values()}
+    for ap in attack_patterns.values():
+        parent = names_by_tid.get(ap["tid"].split(".")[0]) if "." in ap["tid"] else None
+        if parent:
+            ap["name"] = f"{parent}: {ap['name']}"
 
     print(f"[MITRE] Found {len(intrusion_sets)} groups, {len(attack_patterns)} techniques.")
     if not intrusion_sets or not attack_patterns:
@@ -93,6 +107,8 @@ def sync_mitre_data(db: Session):
     group_to_techniques = {}  # mitre_id -> set of technique stix_ids
     for obj in objects:
         if obj.get("type") != "relationship" or obj.get("relationship_type") != "uses":
+            continue
+        if obj.get("revoked") or obj.get("x_mitre_deprecated"):
             continue
         group = intrusion_sets.get(obj.get("source_ref", ""))
         if not group or obj.get("target_ref") not in attack_patterns:

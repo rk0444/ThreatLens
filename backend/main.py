@@ -1019,20 +1019,15 @@ async def get_incident_playbook(incident_id: int, db: Session = Depends(db.get_d
 
 @app.get("/api/threat-actors")
 async def get_all_threat_actors(db: Session = Depends(db.get_db)):
-    groups = db.query(models.MitreGroup).all()
-    result = []
-    for group in groups:
-        result.append({
-            "id": group.id,
-            "mitre_id": group.mitre_id,
-            "name": group.name,
-            "aliases": group.aliases,
-            "description": group.description,
-            "country": group.country,
-            "motivation": group.motivation,
-            "techniques": group.techniques,
-        })
-    return result
+    groups = db.query(models.MitreGroup).order_by(func.lower(models.MitreGroup.name)).all()
+    # Only what the cards and search use; the detail route has the description and technique list
+    return [{
+        "id": group.id,
+        "mitre_id": group.mitre_id,
+        "name": group.name,
+        "aliases": group.aliases,
+        "technique_count": len(group.techniques or []),
+    } for group in groups]
 
 @app.get("/api/threat-actors/{group_id}")
 async def get_threat_actor_detail(group_id: int, db: Session = Depends(db.get_db)):
