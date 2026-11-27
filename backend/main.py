@@ -132,7 +132,7 @@ async def lifespan(app: FastAPI):
     # create_all doesn't add columns to existing tables
     added_columns = {
         "osint_alerts": (("adversary", "VARCHAR"), ("targeted_countries", "JSON"), ("industries", "JSON")),
-        "assets": (("latitude", "FLOAT"), ("longitude", "FLOAT"), ("location_label", "VARCHAR")),
+        "assets": (("latitude", "FLOAT"), ("longitude", "FLOAT"), ("location_label", "VARCHAR"), ("software_versions", "JSON")),
         "flagged_connections": (("source", "VARCHAR"), ("reference", "VARCHAR")),
     }
     with db.engine.begin() as conn:
@@ -573,7 +573,7 @@ async def get_assets(db: Session = Depends(db.get_db)):
         active_incidents = [i for i in incidents if i.status == "Active"]
         latest_incident = incidents[0] if incidents else None
         # Exposure: CVEs whose NVD CPE products match this asset's software (published data, scored in scoring.py)
-        matching = [c for c in affected_cves if matched_software(c, asset.software_list)]
+        matching = [c for c in affected_cves if matched_software(c, asset.software_list, asset.software_versions)]
         top = max(matching, key=lambda c: c.risk_score or 0, default=None)
 
         result.append({
@@ -581,6 +581,7 @@ async def get_assets(db: Session = Depends(db.get_db)):
             "name": asset.name,
             "os": asset.os,
             "software_list": asset.software_list,
+            "software_versions": asset.software_versions or {},
             "ip_address": asset.ip_address,
             "last_seen": _iso_utc(asset.last_seen),
             "online": agent_online(asset),
@@ -604,6 +605,22 @@ async def asset_heartbeat(asset_id: int, db: Session = Depends(db.get_db)):
     asset.last_seen = datetime.now(timezone.utc)
     db.commit()
     return {"id": asset.id, "last_seen": _iso_utc(asset.last_seen)}
+
+
+@app.put("/api/assets/{asset_id}/inventory")
+async def update_asset_inventory(asset_id: int, inventory: schemas.AssetInventory, db: Session = Depends(db.get_db)):
+    """The agent's view of its machine; CVEs are re-matched when the installed software or versions change."""
+    asset = db.query(models.Asset).filter(models.Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    software_changed = (asset.software_list, asset.software_versions) != (inventory.software_list, inventory.software_versions)
+    asset.os, asset.ip_address = inventory.os, inventory.ip_address
+    asset.software_list, asset.software_versions = inventory.software_list, inventory.software_versions
+    db.commit()
+    if software_changed:
+        rematch_in_background()  # broadcasts CVES_UPDATED when done
+    await manager.broadcast(json.dumps({"type": "ASSET_UPDATED", "data": {"id": asset.id}}))
+    return {"id": asset.id, "software_count": len(asset.software_list), "rematching": software_changed}
 
 
 @app.post("/api/assets", response_model=schemas.AssetResponse)
@@ -786,7 +803,7 @@ async def get_asset_exposure_stats(db: Session = Depends(db.get_db)):
     # Note: This is simplified.
     affected_cves = db.query(models.CVE).filter(models.CVE.asset_affected == True).all()
     asset_counts = [
-        {"name": asset.name, "count": sum(1 for cve in affected_cves if matched_software(cve, asset.software_list))}
+        {"name": asset.name, "count": sum(1 for cve in affected_cves if matched_software(cve, asset.software_list, asset.software_versions))}
         for asset in assets
     ]
     
@@ -813,7 +830,7 @@ async def get_assets_exposure_detail(db: Session = Depends(db.get_db)):
             vulnerable_pkg = "N/A"
 
             for cve in db.query(models.CVE).filter(models.CVE.asset_affected == True).all():
-                matched = matched_software(cve, asset.software_list)
+                matched = matched_software(cve, asset.software_list, asset.software_versions)
                 if matched:
                     count += 1
                     if cve.cvss_score is not None and cve.cvss_score > max_score:
@@ -970,7 +987,7 @@ async def get_cve_correlations(cve_id: str, db: Session = Depends(db.get_db)):
     cve = _cve_or_404(db, cve_id)
     assets = []
     for asset in db.query(models.Asset).all():
-        software = matched_software(cve, asset.software_list)
+        software = matched_software(cve, asset.software_list, asset.software_versions)
         if software:
             assets.append({"id": asset.id, "name": asset.name, "software": software})
     incidents = db.query(models.Incident).filter(

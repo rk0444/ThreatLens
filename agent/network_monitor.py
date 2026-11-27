@@ -13,7 +13,13 @@ import time
 import requests
 import socket
 import os
+import platform
 from datetime import datetime, timezone
+
+try:
+    import winreg  # Windows only; used to read installed programs
+except ImportError:
+    winreg = None
 
 # â”€â”€ Config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 API_BASE       = "http://127.0.0.1:8000"
@@ -78,9 +84,9 @@ def get_machine_id() -> int | None:
         print(f"[*] Hostname '{HOSTNAME}' not found in assets. Registering...")
         payload = {
             "name": HOSTNAME,
-            "os": os.name,
+            "os": os_name(),
             "software_list": [],
-            "ip_address": socket.gethostbyname(HOSTNAME),
+            "ip_address": lan_ip(),
             "status": "Online",
         }
         reg = requests.post(ASSETS_URL, json=payload, timeout=5)
@@ -219,6 +225,81 @@ def check_network():
 
 # â”€â”€ Entry Point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Heartbeat
+# Inventory: what the agent reads from this machine, so CVEs are matched to real installed versions
+INVENTORY_EVERY = 6 * 3600  # seconds; software rarely changes faster than this
+_last_inventory = 0.0
+UNINSTALL_KEYS = [
+    ("HKEY_LOCAL_MACHINE", r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ("HKEY_LOCAL_MACHINE", r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ("HKEY_CURRENT_USER", r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+]
+
+def os_name() -> str:
+    if platform.system() == "Windows":
+        return f"Windows {platform.release()} (build {platform.version()})"
+    return platform.platform()
+
+def lan_ip() -> str:
+    """Address of the interface that carries the default route (a UDP connect sends no packet)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))  # TEST-NET address: only used for the route lookup
+            return s.getsockname()[0]
+    except OSError:
+        return socket.gethostbyname(HOSTNAME)
+
+def installed_software() -> dict:
+    """DisplayName -> DisplayVersion of installed programs, as Windows' Apps list shows them."""
+    if winreg is None:
+        return {}
+    apps = {}
+    for hive_name, path in UNINSTALL_KEYS:
+        try:
+            key = winreg.OpenKey(getattr(winreg, hive_name), path)
+        except OSError:
+            continue
+        with key:
+            for i in range(winreg.QueryInfoKey(key)[0]):
+                values = {}
+                try:
+                    with winreg.OpenKey(key, winreg.EnumKey(key, i)) as sub:
+                        for value in ("DisplayName", "DisplayVersion", "SystemComponent", "ParentKeyName"):
+                            try:
+                                values[value] = winreg.QueryValueEx(sub, value)[0]
+                            except OSError:
+                                pass
+                except OSError:
+                    continue
+                name = str(values.get("DisplayName") or "").strip()
+                # hidden components and updates that belong to another program are not separate software
+                if name and values.get("SystemComponent") != 1 and not values.get("ParentKeyName"):
+                    apps[name] = str(values.get("DisplayVersion") or "").strip()
+    return apps
+
+def send_inventory():
+    global _last_inventory, _machine_id
+    machine_id = get_machine_id()
+    if machine_id is None:
+        return
+    apps = installed_software()
+    payload = {
+        "os": os_name(),
+        "ip_address": lan_ip(),
+        "software_list": sorted(apps),
+        "software_versions": {name: ver for name, ver in apps.items() if ver},
+    }
+    try:
+        resp = requests.put(f"{ASSETS_URL}/{machine_id}/inventory", json=payload, timeout=30)
+        if resp.status_code == 200:
+            _last_inventory = time.time()
+            print(f"[*] Inventory sent: {payload['os']}, {payload['ip_address']}, {len(apps)} programs")
+        elif resp.status_code == 404:
+            _machine_id = None
+        else:
+            print(f"[!] Inventory rejected: HTTP {resp.status_code} {resp.text[:200]}")
+    except Exception as e:
+        print(f"[!] Inventory failed: {e}")
+
 def send_heartbeat():
     """Tell the backend this agent is alive; its last_seen is what marks the machine online."""
     global _machine_id
@@ -228,7 +309,8 @@ def send_heartbeat():
     try:
         resp = requests.post(f"{ASSETS_URL}/{machine_id}/heartbeat", timeout=5)
         if resp.status_code == 404:  # asset removed in the app: register again next poll
-            _machine_id = None
+            global _last_inventory
+            _machine_id, _last_inventory = None, 0.0
     except Exception as e:
         print(f"[!] Heartbeat failed: {e}")
 
@@ -243,6 +325,8 @@ if __name__ == "__main__":
 
     while True:
         send_heartbeat()
+        if time.time() - _last_inventory > INVENTORY_EVERY:
+            send_inventory()
         try:
             check_network()
         except Exception as e:

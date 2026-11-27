@@ -38,6 +38,7 @@ class Asset(Base):
     name: Mapped[str] = mapped_column(String)
     os: Mapped[str] = mapped_column(String)
     software_list: Mapped[List[str]] = mapped_column(JSON)
+    software_versions: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)  # name -> installed version, from the agent
     ip_address: Mapped[str] = mapped_column(String)
     last_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

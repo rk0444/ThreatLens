@@ -28,7 +28,8 @@ def test_asset_match_sets_count_clears_and_rescores():
                           asset_affected=False, affected_asset_count=0, ransomware_use=False,
                           patch_available=True, published_date=None, risk_score=None, risk_band=None)
     # matches the CPE product only; names that merely appear in the description don't count
-    assets = [SimpleNamespace(software_list=["OpenSSL 3.0"]), SimpleNamespace(software_list=["nginx", "Python 3.10"])]
+    assets = [SimpleNamespace(software_list=["OpenSSL 3.0"], software_versions=None),
+              SimpleNamespace(software_list=["nginx", "Python 3.10"], software_versions=None)]
     _match_assets(cve, assets)
     assert (cve.asset_affected, cve.affected_asset_count, cve.risk_band) == (True, 1, "CRITICAL")
     assert cve.affected_products == ["openssl"]

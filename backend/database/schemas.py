@@ -38,11 +38,20 @@ class AssetBase(BaseModel):
     name: str
     os: str
     software_list: List[str]
+    software_versions: Optional[dict] = None  # name -> installed version (agent inventory)
     ip_address: str
     status: Optional[str] = None  # ignored: online/offline comes from the agent's heartbeat (last_seen)
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     location_label: Optional[str] = None
+
+
+class AssetInventory(BaseModel):
+    """What the agent reads from the machine itself (OS, LAN address, installed programs and versions)."""
+    os: str = Field(..., max_length=200)
+    ip_address: str = Field(..., max_length=64)
+    software_list: List[str] = Field(..., max_length=2000)
+    software_versions: dict = Field(default_factory=dict)
 
 
 class AssetLocation(BaseModel):

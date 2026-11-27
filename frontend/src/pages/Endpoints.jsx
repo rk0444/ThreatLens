@@ -5,7 +5,7 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { getRiskColor } from '../utils/riskScore';
 
 const API = 'http://127.0.0.1:8000';
-const REFRESH_EVENTS = ['ASSET_ADDED', 'ASSET_DELETED', 'NEW_INCIDENT', 'INCIDENT_UPDATE'];
+const REFRESH_EVENTS = ['ASSET_ADDED', 'ASSET_DELETED', 'ASSET_UPDATED', 'CVES_UPDATED', 'NEW_INCIDENT', 'INCIDENT_UPDATE'];
 const EMPTY_FORM = { name: '', os: 'Windows 11 Pro', ip_address: '', software_list: '' };
 
 const OS_BADGES = {
@@ -315,7 +315,9 @@ export default function Endpoints() {
                 <div className="label-small">Installed Software ({(selected.software_list||[]).length})</div>
                 <div style={{display:'flex',flexWrap:'wrap',gap:'0.5rem',marginTop:'0.75rem'}}>
                   {(selected.software_list||[]).map((pkg,i)=>(
-                    <span key={i} style={{background:'rgba(255,255,255,0.05)',border:'1px solid var(--border)',padding:'0.25rem 0.6rem',borderRadius:'4px',fontSize:'0.8rem',color:'var(--text-secondary)'}}>{pkg}</span>
+                    <span key={i} style={{background:'rgba(255,255,255,0.05)',border:'1px solid var(--border)',padding:'0.25rem 0.6rem',borderRadius:'4px',fontSize:'0.8rem',color:'var(--text-secondary)'}}>
+                      {pkg}{selected.software_versions?.[pkg] && <span style={{color:'var(--text-muted)'}}> {selected.software_versions[pkg]}</span>}
+                    </span>
                   ))}
                 </div>
               </div>
