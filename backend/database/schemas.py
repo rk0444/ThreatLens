@@ -39,7 +39,7 @@ class AssetBase(BaseModel):
     os: str
     software_list: List[str]
     ip_address: str
-    status: str
+    status: Optional[str] = None  # ignored: online/offline comes from the agent's heartbeat (last_seen)
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     location_label: Optional[str] = None
@@ -60,6 +60,11 @@ class AssetResponse(AssetBase):
     id: int
     last_seen: datetime
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("last_seen")
+    @classmethod
+    def _as_utc(cls, v):
+        return v.replace(tzinfo=timezone.utc) if v is not None and v.tzinfo is None else v
 
 
 class IncidentBase(BaseModel):
@@ -98,6 +103,12 @@ class IncidentResponse(IncidentBase):
     timeline: Optional[List[dict]] = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("created_at")
+    @classmethod
+    def _as_utc(cls, v):
+        # naive UTC from SQLite; add the offset so browsers don't read it as local time
+        return v.replace(tzinfo=timezone.utc) if v is not None and v.tzinfo is None else v
 
 
 class AnalystAction(BaseModel):

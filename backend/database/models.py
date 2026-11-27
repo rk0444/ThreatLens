@@ -42,7 +42,7 @@ class Asset(Base):
     last_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    status: Mapped[str] = mapped_column(String)  # Online, Offline, Vulnerable
+    status: Mapped[str] = mapped_column(String, default="")  # unused: online/offline comes from last_seen (heartbeat)
     # Placed by the user on the Attack Map; never inferred
     latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

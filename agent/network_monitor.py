@@ -55,11 +55,11 @@ def _evict_stale():
 # â”€â”€ Asset ID lookup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _machine_id: int | None = None
 
-def get_machine_id() -> int:
+def get_machine_id() -> int | None:
     """
     Look up this machine's asset ID by hostname.
     Registers the asset if it doesn't exist yet.
-    Caches the result for the lifetime of the process.
+    Caches the result; None while the backend can't be reached (asked again next time).
     """
     global _machine_id
     if _machine_id is not None:
@@ -92,8 +92,8 @@ def get_machine_id() -> int:
         print(f"[!] Could not resolve machine_id: {e}")
 
     # Fallback â€” avoids crashing if backend is temporarily unreachable
-    print("[!] Falling back to machine_id=1")
-    return 1
+    # No guessed id: incidents filed under a made-up asset would point at the wrong machine
+    return None
 
 # â”€â”€ IP Reputation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 def check_ip_reputation(ip: str):
@@ -135,6 +135,9 @@ def report_incident(
     process_name: str | None = None,
 ):
     machine_id = get_machine_id()
+    if machine_id is None:
+        print(f"[!] Backend unreachable; incident not filed: {incident_type} | {network_connection}")
+        return
     payload = {
         "machine_id": machine_id,
         "type": incident_type,
@@ -215,6 +218,20 @@ def check_network():
     print(f"[*] Scan complete â€” {flagged} malicious connection(s) flagged.")
 
 # â”€â”€ Entry Point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Heartbeat
+def send_heartbeat():
+    """Tell the backend this agent is alive; its last_seen is what marks the machine online."""
+    global _machine_id
+    machine_id = get_machine_id()
+    if machine_id is None:
+        return
+    try:
+        resp = requests.post(f"{ASSETS_URL}/{machine_id}/heartbeat", timeout=5)
+        if resp.status_code == 404:  # asset removed in the app: register again next poll
+            _machine_id = None
+    except Exception as e:
+        print(f"[!] Heartbeat failed: {e}")
+
 if __name__ == "__main__":
     # Windows consoles and redirected logs are often not UTF-8; a non-ASCII print must not abort a scan
     sys.stdout.reconfigure(errors="replace")
@@ -225,6 +242,7 @@ if __name__ == "__main__":
     get_machine_id()
 
     while True:
+        send_heartbeat()
         try:
             check_network()
         except Exception as e:

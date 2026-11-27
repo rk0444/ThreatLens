@@ -1,6 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Plus, X, Monitor, AlertTriangle, Clock, Trash2 } from 'lucide-react';
 import CustomDropdown from '../components/CustomDropdown';
+import { useWebSocket } from '../hooks/useWebSocket';
+import { getRiskColor } from '../utils/riskScore';
+
+const API = 'http://127.0.0.1:8000';
+const REFRESH_EVENTS = ['ASSET_ADDED', 'ASSET_DELETED', 'NEW_INCIDENT', 'INCIDENT_UPDATE'];
+const EMPTY_FORM = { name: '', os: 'Windows 11 Pro', ip_address: '', software_list: '' };
 
 const OS_BADGES = {
   'Windows 11': { color: '#0078d4', label: 'WIN 11' },
@@ -20,80 +26,94 @@ const getOsBadge = (os = '') => {
   return { color: '#444', label: 'OTHER' };
 };
 
-const getAgentStatus = (lastSeen) => {
-  if (!lastSeen) return { label: 'Offline', color: 'var(--danger)' };
-  const secs = (Date.now() - new Date(lastSeen).getTime()) / 1000;
-  if (secs < 60)    return { label: 'Online', color: 'var(--success)' };
-  if (secs < 300)   return { label: 'Idle',   color: 'var(--warning)' };
-  if (secs < 3600)  return { label: 'Stale',  color: '#f6ad55' };
-  return              { label: 'Offline', color: 'var(--danger)' };
+// Online/offline comes from the server (agent heartbeat within the last minute); this only words the last check-in
+const getCheckinLabel = (lastSeen, online, now) => {
+  if (!lastSeen) return { text: 'Never', color: 'var(--danger)', warn: true };
+  if (online) return { text: 'Just now', color: 'var(--success)' };
+  const mins = Math.floor((now - new Date(lastSeen).getTime()) / 60000);
+  if (mins < 60)   return { text: `${mins}m ago`, color: 'var(--warning)', warn: true };
+  if (mins < 1440) return { text: `${Math.floor(mins / 60)}h ago`, color: 'var(--warning)', warn: true };
+  return { text: `${new Date(lastSeen).toLocaleDateString()} (no agent reporting)`, color: 'var(--danger)', warn: true };
 };
 
-const getCheckinLabel = (lastSeen) => {
-  if (!lastSeen) return { text: 'Never', color: 'var(--danger)' };
-  const secs = (Date.now() - new Date(lastSeen).getTime()) / 1000;
-  if (secs < 60)   return { text: 'Just now',                          color: 'var(--success)' };
-  if (secs < 300)  return { text: `${Math.floor(secs/60)}m ago`,       color: 'var(--success)' };
-  if (secs < 3600) return { text: `${Math.floor(secs/60)}m ago`,       color: 'var(--warning)', warn: true };
-  if (secs < 86400)return { text: `${Math.floor(secs/3600)}h ago`,     color: '#f6ad55', warn: true };
-  return             { text: 'Agent may be down',                       color: 'var(--danger)', warn: true };
-};
+const statusOf = (asset) => asset.online
+  ? { label: 'Online', color: 'var(--success)' }
+  : { label: 'Offline', color: 'var(--danger)' };
 
-const getRiskColor = (score) => {
-  if (score >= 86) return 'var(--danger)';
-  if (score >= 61) return '#fc8181';
-  if (score >= 31) return 'var(--warning)';
-  return 'var(--success)';
+const getJson = async (url, options) => {
+  const res = await fetch(url, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = typeof data.detail === 'string' ? data.detail : Array.isArray(data.detail) ? data.detail.map(d => d.msg).join('; ') : null;
+    throw new Error(detail || `HTTP ${res.status}`);
+  }
+  return data;
 };
 
 export default function Endpoints() {
   const [assets, setAssets]         = useState([]);
   const [loading, setLoading]       = useState(true);
+  const [error, setError]           = useState(null);
   const [selected, setSelected]     = useState(null);
   const [assetIncs, setAssetIncs]   = useState([]);
   const [showModal, setShowModal]   = useState(false);
-  const [form, setForm]             = useState({ name: '', os: 'Windows 11 Pro', ip_address: '', software_list: '', status: 'Online' });
+  const [form, setForm]             = useState(EMPTY_FORM);
+  const [formError, setFormError]   = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [now, setNow]               = useState(() => Date.now());
 
-  const fetchAssets = () =>
-    fetch('http://127.0.0.1:8000/api/assets')
-      .then(r => r.json()).then(d => { setAssets(d); setLoading(false); })
-      .catch(() => setLoading(false));
+  const fetchAssets = useCallback(() =>
+    getJson(`${API}/api/assets`)
+      .then(d => { setAssets(d); setError(null); setNow(Date.now()); })
+      .catch(e => setError(`Could not load endpoints (${e.message}). Is the backend running?`))
+      .finally(() => setLoading(false)), []);
 
+  useEffect(() => { fetchAssets(); }, [fetchAssets]);
+
+  // Heartbeats don't broadcast, so re-check online/offline every 30 s
   useEffect(() => {
-    fetchAssets();
-    const ws = new WebSocket('ws://127.0.0.1:8000/ws/events');
-    ws.onmessage = e => { if (JSON.parse(e.data).type === 'ASSET_ADDED') fetchAssets(); };
-    return () => ws.close();
-  }, []);
+    const t = setInterval(fetchAssets, 30000);
+    return () => clearInterval(t);
+  }, [fetchAssets]);
+
+  useWebSocket(useCallback(msg => {
+    if (REFRESH_EVENTS.includes(msg.type)) fetchAssets();
+  }, [fetchAssets]));
 
   const openDetail = (asset) => {
     setSelected(asset);
-    fetch(`http://127.0.0.1:8000/api/assets/${asset.id}/incidents`)
-      .then(r => r.json()).then(setAssetIncs).catch(() => setAssetIncs([]));
+    setAssetIncs([]);
+    getJson(`${API}/api/assets/${asset.id}/incidents`).then(setAssetIncs).catch(() => setAssetIncs([]));
   };
 
   const handleAdd = async () => {
     setSubmitting(true);
+    setFormError(null);
     const payload = { ...form, software_list: form.software_list.split(',').map(s => s.trim()).filter(Boolean) };
-    const res = await fetch('http://127.0.0.1:8000/api/assets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    if (res.ok) { setShowModal(false); setForm({ name: '', os: 'Windows 11 Pro', ip_address: '', software_list: '', status: 'Online' }); fetchAssets(); }
+    try {
+      await getJson(`${API}/api/assets`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      setShowModal(false);
+      setForm(EMPTY_FORM);
+      fetchAssets();
+    } catch (e) {
+      setFormError(`Could not register the endpoint (${e.message}).`);
+    }
     setSubmitting(false);
   };
 
   const handleDelete = async (id) => {
     if (confirm('Are you sure you want to remove this endpoint? This will also clear all incidents associated with it.')) {
       try {
-        const res = await fetch(`http://127.0.0.1:8000/api/assets/${id}`, { method: 'DELETE' });
-        if (res.ok) {
-          setSelected(null);
-          fetchAssets();
-        }
-      } catch (err) {
-        console.error("Failed to delete endpoint", err);
+        await getJson(`${API}/api/assets/${id}`, { method: 'DELETE' });
+        setSelected(null);
+        fetchAssets();
+      } catch (e) {
+        setError(`Could not remove the endpoint (${e.message}).`);
       }
     }
   };
+
+  const onlineCount = assets.filter(a => a.online).length;
 
   const osOptions = [
     { value: 'Windows 11 Pro', label: 'Windows 11 Pro' },
@@ -122,41 +142,56 @@ export default function Endpoints() {
         <div>
           <div className="label-small">Agent Protection</div>
           <h1>Endpoint <span className="italic-serif">Protection</span></h1>
-          <div className="status-badge" style={{ marginTop:'0.5rem', width:'fit-content' }}>
-            <div className="status-dot" />
-            <span>LIVE — {assets.filter(a=>a.status==='Online').length} / {assets.length} Agents Online</span>
-          </div>
+          {!loading && !error && (
+            <div className="status-badge" style={{ marginTop:'0.5rem', width:'fit-content' }}>
+              <span>{onlineCount} / {assets.length} agents reporting</span>
+            </div>
+          )}
         </div>
         <button className="gold-button" onClick={()=>setShowModal(true)} style={{ display:'flex', alignItems:'center', gap:'0.5rem' }}>
           <Plus size={18}/> Register Endpoint
         </button>
       </div>
 
-      {/* Stats Row */}
-      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'1rem', marginBottom:'2rem' }}>
+      {error && (
+        <div role="alert" style={{ marginBottom:'1.5rem', padding:'12px 16px', borderRadius:'6px', border:'1px solid rgba(229,62,62,0.4)', background:'rgba(74,26,26,0.6)', color:'#fc8181' }}>
+          {error}
+        </div>
+      )}
+
+      {/* Stats Row (hidden until loaded, so a failed load never shows zeros as real) */}
+      {!loading && !(error && assets.length === 0) && (
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(4,minmax(0,1fr))', gap:'1rem', marginBottom:'2rem' }}>
         {[
           { label:'Total Endpoints',  value: assets.length,                                        color:'var(--accent-gold)' },
-          { label:'Online',           value: assets.filter(a=>a.status==='Online').length,          color:'var(--success)'     },
-          { label:'Offline',          value: assets.filter(a=>a.status==='Offline').length,         color:'var(--danger)'      },
+          { label:'Online',           value: onlineCount,                                          color:'var(--success)'     },
+          { label:'Offline',          value: assets.length - onlineCount,                          color:'var(--danger)'      },
           { label:'Active Incidents', value: assets.reduce((s,a)=>s+(a.active_incident_count||0),0),color:'var(--warning)'     },
         ].map((s,i) => (
           <div key={i} className="glass-panel" style={{ padding:'1.25rem' }}>
             <div className="label-small">{s.label}</div>
-            <div style={{ fontSize:'2rem', fontWeight:700, color:s.color, fontFamily:'DM Serif Display' }}>{loading?'—':s.value}</div>
+            <div style={{ fontSize:'2rem', fontWeight:700, color:s.color, fontFamily:'DM Serif Display' }}>{s.value}</div>
           </div>
         ))}
       </div>
+      )}
+
+      {!loading && !error && assets.length === 0 && (
+        <div style={{ textAlign:'center', padding:'80px 0', color:'var(--text-muted)' }}>
+          <Monitor size={40} style={{ opacity:0.4, marginBottom:'1rem' }}/>
+          <h3 style={{ color:'var(--text-secondary)' }}>No endpoints yet</h3>
+          <p style={{ fontSize:'0.9rem' }}>Run the ThreatLens agent on a machine to register it, or use Register Endpoint.</p>
+        </div>
+      )}
 
       {/* Card Grid */}
       <div className="ep-grid">
         {loading ? [1,2,3].map(i=><div key={i} className="glass-panel skeleton" style={{height:'220px'}}/>)
         : assets.map(asset => {
           const osBadge     = getOsBadge(asset.os);
-          const agentStatus = getAgentStatus(asset.last_seen);
-          const checkin     = getCheckinLabel(asset.last_seen);
-          const riskScore   = asset.risk_score || 0;
-          const riskColor   = getRiskColor(riskScore);
-          const isPulsing   = riskScore >= 86;
+          const agentStatus = statusOf(asset);
+          const checkin     = getCheckinLabel(asset.last_seen, asset.online, now);
+          const top         = asset.top_cve;
           const sw          = asset.software_list || [];
           const swDisplay   = sw.slice(0,2).join(', ') + (sw.length>2 ? ` +${sw.length-2} more` : '');
           const summary     = asset.latest_incident_summary;
@@ -179,13 +214,8 @@ export default function Endpoints() {
                     </span>
                   </div>
                 </div>
-                {/* Right: risk circle + status pill */}
+                {/* Right: status pill */}
                 <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:'6px' }}>
-                  {/* Risk score circle */}
-                  <div style={{ width:'38px', height:'38px', borderRadius:'50%', border:`2px solid ${riskColor}`, display:'flex', alignItems:'center', justifyContent:'center', fontWeight:700, fontSize:'0.8rem', color: riskColor, animation: isPulsing ? 'pulseCritical 2s infinite' : 'none', background:'rgba(0,0,0,0.3)' }}>
-                    {riskScore}
-                  </div>
-                  {/* Status pill */}
                   <div style={{ fontSize:'0.7rem', fontWeight:600, color: agentStatus.color, display:'flex', alignItems:'center', gap:'4px' }}>
                     <div style={{ width:'6px', height:'6px', borderRadius:'50%', background: agentStatus.color }}/>
                     {agentStatus.label}
@@ -196,12 +226,12 @@ export default function Endpoints() {
               {/* DIVIDER */}
               <div style={{ height:'1px', background:'rgba(184,146,42,0.12)', margin:'0 16px' }}/>
 
-              {/* ROW 2: Incident stat pills */}
+              {/* ROW 2: Active incidents + published exposure (CVEs matching this asset's software) */}
               <div style={{ display:'flex', gap:'8px', padding:'10px 16px' }}>
                 {[
-                  { label:`${asset.active_incident_count||0} Active`,    bg: (asset.active_incident_count||0)>0 ? 'rgba(229,62,62,0.15)'  : 'rgba(255,255,255,0.04)', border: (asset.active_incident_count||0)>0 ? 'rgba(229,62,62,0.4)'    : 'rgba(255,255,255,0.08)', color: (asset.active_incident_count||0)>0 ? '#fc8181' : 'var(--text-muted)' },
-                  { label:`${asset.threats_blocked||0} Blocked`,         bg:'rgba(72,187,120,0.1)',                                         border:'rgba(72,187,120,0.3)',                                                                    color:'var(--success)' },
-                  { label:`${asset.files_quarantined||0} Quarantined`,   bg:'rgba(236,153,75,0.1)',                                         border:'rgba(236,153,75,0.3)',                                                                    color:'var(--warning)' },
+                  { label:`${asset.active_incident_count||0} Active incident${asset.active_incident_count===1?'':'s'}`, bg: (asset.active_incident_count||0)>0 ? 'rgba(229,62,62,0.15)'  : 'rgba(255,255,255,0.04)', border: (asset.active_incident_count||0)>0 ? 'rgba(229,62,62,0.4)'    : 'rgba(255,255,255,0.08)', color: (asset.active_incident_count||0)>0 ? '#fc8181' : 'var(--text-muted)' },
+                  { label: sw.length === 0 ? 'No software listed' : top ? `${asset.matching_cve_count} CVEs · top ${top.risk_score} ${top.risk_band}` : '0 matching CVEs',
+                    bg:'rgba(255,255,255,0.04)', border:'rgba(255,255,255,0.08)', color: top ? getRiskColor(top.risk_score) : 'var(--text-muted)' },
                 ].map((p,i) => (
                   <div key={i} style={{ flex:1, textAlign:'center', padding:'4px 0', background:p.bg, border:`1px solid ${p.border}`, borderRadius:'4px', fontSize:'0.68rem', fontWeight:600, color:p.color }}>
                     {p.label}
@@ -277,7 +307,8 @@ export default function Endpoints() {
               <div className="info-grid">
                 <div className="info-item"><span className="label-small">OS</span><div className="value">{selected.os}</div></div>
                 <div className="info-item"><span className="label-small">IP</span><div className="value" style={{fontFamily:'JetBrains Mono'}}>{selected.ip_address}</div></div>
-                <div className="info-item"><span className="label-small">Risk Score</span><div className="value" style={{color:getRiskColor(selected.risk_score||0)}}>{selected.risk_score||0}/100</div></div>
+                <div className="info-item"><span className="label-small">Matching CVEs</span><div className="value">{(selected.software_list||[]).length ? selected.matching_cve_count : 'No software listed'}</div></div>
+                <div className="info-item"><span className="label-small">Highest CVE Risk</span><div className="value" style={{color: selected.top_cve ? getRiskColor(selected.top_cve.risk_score) : 'var(--text-muted)'}}>{selected.top_cve ? `${selected.top_cve.risk_score} ${selected.top_cve.risk_band} (${selected.top_cve.cve_id})` : '—'}</div></div>
                 <div className="info-item"><span className="label-small">Active Incidents</span><div className="value">{selected.active_incident_count||0}</div></div>
               </div>
               <div className="asset-section" style={{marginTop:'2rem'}}>
@@ -335,6 +366,7 @@ export default function Endpoints() {
                 />
               </div>
             </div>
+            {formError && <div role="alert" style={{ color:'var(--danger)', fontSize:'0.85rem', marginTop:'1rem' }}>{formError}</div>}
             <button className="gold-button" style={{width:'100%',marginTop:'2rem'}} onClick={handleAdd} disabled={submitting||!form.name||!form.ip_address}>
               {submitting?'Registering...':'Register Endpoint'}
             </button>

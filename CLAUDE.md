@@ -29,9 +29,9 @@ cd frontend; npm run dev
 
 Live malicious-IP detection on this PC (checks each new public connection against the published blocklists, then AbuseIPDB cached 24 h). `npm run dev` starts it automatically once the backend answers; on its own: `npm run monitor:dev`.
 
-Electron (frontend, backend, network monitor and the window together): `npm run dev` at the root. The window opens once the backend answers; closing it calls `POST /api/system/shutdown` (waits for running syncs, closes the DB) and `concurrently -k` then stops the rest. Build: `npm run build` (Vite build, then electron-builder; output in `build/`; `npx electron-builder --dir` for an unpacked test build).
+Electron (frontend, backend, network and process monitors, and the window together): `npm run dev` at the root. The window opens once the backend answers; closing it calls `POST /api/system/shutdown` (waits for running syncs, closes the DB) and `concurrently -k` then stops the rest. Build: `npm run build` (Vite build, then electron-builder; output in `build/`; `npx electron-builder --dir` for an unpacked test build).
 
-Installed app (`main.js`, not dev): keeps its data in `%APPDATA%\threatlens-v2` (`.env`, `threatlens.sqlite` via `THREATLENS_DATA_DIR`, `python\` private venv built from system Python 3 on first launch, `logs\`), then starts the backend and network monitor itself. Packaging excludes the project's database, backups, `.mmdb` and caches.
+Installed app (`main.js`, not dev): keeps its data in `%APPDATA%\threatlens-v2` (`.env`, `threatlens.sqlite` via `THREATLENS_DATA_DIR`, `python\` private venv built from system Python 3 on first launch, `logs\`), then starts the backend and both monitors itself (logs `monitor.log`, `process-monitor.log`). The network monitor's heartbeat (`POST /api/assets/{id}/heartbeat`) is what marks a machine online. Packaging excludes the project's database, backups, `.mmdb` and caches.
 
 ## Rules and notes
 

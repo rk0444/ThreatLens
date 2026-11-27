@@ -247,8 +247,8 @@ const Overview = () => {
             delay: 0.3
           },
           { 
-            label: 'Assets Monitored', 
-            value: metrics.assetsMonitored, 
+            label: `Agents Reporting (of ${metrics.assetsRegistered})`, 
+            value: metrics.agentsOnline, 
             icon: <Activity size={20} />,
             color: 'var(--success)',
             delay: 0.4

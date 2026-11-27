@@ -264,7 +264,8 @@ async def get_overview(db: Session = Depends(db.get_db)):
         critical_count = (
             db.query(models.CVE).filter(models.CVE.risk_band == "CRITICAL").count()
         )
-        assets_monitored = db.query(models.Asset).count()
+        all_assets = db.query(models.Asset).all()
+        agents_online = sum(1 for a in all_assets if agent_online(a))
         
         # Get severity breakdown
         from collections import Counter
@@ -327,7 +328,8 @@ async def get_overview(db: Session = Depends(db.get_db)):
                 'totalCves': total_cves,
                 'activeIncidents': active_incidents,
                 'criticalThreats': critical_count,
-                'assetsMonitored': assets_monitored
+                'assetsRegistered': len(all_assets),
+                'agentsOnline': agents_online
             },
             'severityBreakdown': severity_breakdown,
             'topThreats': top_threats_data,
@@ -550,22 +552,29 @@ async def get_cve_detail(cve_id: str, db: Session = Depends(db.get_db)):
     return cve
 
 
+AGENT_ONLINE_SECS = 60  # agents send a heartbeat every poll (10 s); silent for a minute = offline
+
+
+def agent_online(asset) -> bool:
+    if not asset.last_seen:
+        return False
+    seen = asset.last_seen if asset.last_seen.tzinfo else asset.last_seen.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - seen).total_seconds() < AGENT_ONLINE_SECS
+
+
 @app.get("/api/assets")
 async def get_assets(db: Session = Depends(db.get_db)):
     assets = db.query(models.Asset).all()
+    affected_cves = db.query(models.CVE).filter(models.CVE.asset_affected == True).all()
     result = []
     for asset in assets:
-        incidents = db.query(models.Incident).filter(models.Incident.machine_id == asset.id).all()
+        incidents = (db.query(models.Incident).filter(models.Incident.machine_id == asset.id)
+                     .order_by(models.Incident.created_at.desc()).all())
         active_incidents = [i for i in incidents if i.status == "Active"]
-        blocked = [i for i in incidents if i.auto_response_action and ("kill" in (i.auto_response_action or "").lower() or "block" in (i.auto_response_action or "").lower())]
-        quarantined = [i for i in incidents if "quarantine" in (i.auto_response_action or "").lower()]
-
-        # Risk score: highest cvss-derived score from active incidents
-        def severity_to_score(sev):
-            return {"Critical": 92, "High": 72, "Medium": 45, "Low": 20}.get(sev, 0)
-        risk_score = max((severity_to_score(i.severity) for i in active_incidents), default=0)
-
         latest_incident = incidents[0] if incidents else None
+        # Exposure: CVEs whose NVD CPE products match this asset's software (published data, scored in scoring.py)
+        matching = [c for c in affected_cves if matched_software(c, asset.software_list)]
+        top = max(matching, key=lambda c: c.risk_score or 0, default=None)
 
         result.append({
             "id": asset.id,
@@ -573,25 +582,35 @@ async def get_assets(db: Session = Depends(db.get_db)):
             "os": asset.os,
             "software_list": asset.software_list,
             "ip_address": asset.ip_address,
-            "last_seen": asset.last_seen.isoformat() if asset.last_seen else None,
-            "status": asset.status,
+            "last_seen": _iso_utc(asset.last_seen),
+            "online": agent_online(asset),
             "latitude": asset.latitude,
             "longitude": asset.longitude,
             "location_label": asset.location_label,
-            "risk_score": risk_score,
+            "matching_cve_count": len(matching),
+            "top_cve": {"cve_id": top.cve_id, "risk_score": round(top.risk_score or 0, 1), "risk_band": top.risk_band} if top else None,
             "active_incident_count": len(active_incidents),
-            "threats_blocked": len(blocked),
-            "files_quarantined": len(quarantined),
             "latest_incident_summary": (latest_incident.type + (": " + latest_incident.process_name if latest_incident.process_name else "")) if latest_incident else None,
         })
     return result
+
+
+@app.post("/api/assets/{asset_id}/heartbeat")
+async def asset_heartbeat(asset_id: int, db: Session = Depends(db.get_db)):
+    """Called by the agent on every poll; last_seen is what marks an agent online."""
+    asset = db.query(models.Asset).filter(models.Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    asset.last_seen = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": asset.id, "last_seen": _iso_utc(asset.last_seen)}
 
 
 @app.post("/api/assets", response_model=schemas.AssetResponse)
 async def register_asset(
     asset: schemas.AssetCreate, db: Session = Depends(db.get_db)
 ):
-    db_asset = models.Asset(**asset.model_dump())
+    db_asset = models.Asset(**asset.model_dump(exclude={"status"}))
     db.add(db_asset)
     db.commit()
     db.refresh(db_asset)
@@ -1315,7 +1334,7 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
         ).order_by(models.Incident.created_at.desc()).all()
         asset_pins.append({
             "id": asset.id, "name": asset.name, "os": asset.os, "ip_address": asset.ip_address,
-            "status": asset.status, "last_seen": _iso_utc(asset.last_seen),
+            "status": "Online" if agent_online(asset) else "Offline", "last_seen": _iso_utc(asset.last_seen),
             "lat": asset.latitude, "lng": asset.longitude, "location_label": asset.location_label,
             "highest_severity": max((i.severity for i in open_incidents),
                                     key=lambda sev: severity_rank.get(sev, 0), default=None),

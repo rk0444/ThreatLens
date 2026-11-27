@@ -177,7 +177,7 @@ const Settings = () => {
                       <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{asset.os} &bull; {asset.ip_address}</div>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                      <span style={{ fontSize: '0.8rem', color: asset.status === 'Online' ? 'var(--success)' : 'var(--text-muted)' }}>{asset.status}</span>
+                      <span style={{ fontSize: '0.8rem', color: asset.online ? 'var(--success)' : 'var(--text-muted)' }}>{asset.online ? 'Online' : 'Offline'}</span>
                       <button onClick={() => handleDeleteAsset(asset.id)} style={{ background: 'none', border: 'none', color: 'var(--danger)', cursor: 'pointer', padding: '4px' }}>
                         <Trash2 size={16}/>
                       </button>

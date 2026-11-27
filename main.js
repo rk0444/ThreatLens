@@ -8,7 +8,7 @@ const isDev = !app.isPackaged;
 let mainWindow;
 let tray;
 let backendProcess = null;  // only in the installed app; `npm run dev` starts the backend itself
-let monitorProcess = null;
+let monitorProcesses = [];  // agent/network_monitor.py and agent/process_monitor.py
 let quitting = false;
 
 const API = 'http://127.0.0.1:8000';
@@ -94,17 +94,20 @@ async function startServices() {
 
   if (!(await waitForBackend(10 * 60 * 1000)) || quitting) return;  // first start syncs feeds before answering
   if (mainWindow) mainWindow.loadURL(appUrl());
-  const monitorLog = logTo('monitor');
-  monitorProcess = spawn(py, ['-u', path.join(resources, 'agent', 'network_monitor.py')], { cwd: resources, env, windowsHide: true });
-  monitorProcess.stdout.pipe(monitorLog);
-  monitorProcess.stderr.pipe(monitorLog);
-  monitorProcess.on('exit', () => { monitorProcess = null; });
+  for (const [script, logName] of [['network_monitor.py', 'monitor'], ['process_monitor.py', 'process-monitor']]) {
+    const log = logTo(logName);
+    const child = spawn(py, ['-u', path.join(resources, 'agent', script)], { cwd: resources, env, windowsHide: true });
+    child.stdout.pipe(log);
+    child.stderr.pipe(log);
+    child.on('exit', () => { monitorProcesses = monitorProcesses.filter(p => p !== child); });
+    monitorProcesses.push(child);
+  }
 }
 
 // Quit: stop the monitor, ask the backend to finish running syncs and close the database, then exit.
 // A hard kill during a database write is what leaves the SQLite files unusable.
 async function stopServices() {
-  if (monitorProcess) monitorProcess.kill();
+  monitorProcesses.forEach(p => p.kill());
   try {
     await fetch(`${API}/api/system/shutdown`, { method: 'POST', signal: AbortSignal.timeout(150000) });
   } catch { /* backend not running */ }
