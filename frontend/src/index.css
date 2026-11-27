@@ -348,6 +348,12 @@ code, pre {
               radial-gradient(circle at bottom left, rgba(49, 130, 206, 0.03), transparent 40%);
 }
 
+/* Edge-to-edge pages (the Attack Map) */
+.content-full {
+  padding: 0;
+  overflow: hidden;
+}
+
 .page-container {
   max-width: 1200px;
   margin: 0 auto;

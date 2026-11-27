@@ -111,7 +111,7 @@ function AppLayout() {
       {!isOnboarding && <Sidebar />}
       <div className={isOnboarding ? "onboarding-wrapper" : "main-wrapper"}>
         {!isOnboarding && <TopBar />}
-        <main className={isOnboarding ? "onboarding-content" : "content"}>
+        <main className={isOnboarding ? "onboarding-content" : location.pathname === '/attackmap' ? "content content-full" : "content"}>
           <AnimatePresence mode="wait">
             <Routes location={location} key={location.pathname}>
               <Route path="/" element={<PageWrapper><Overview /></PageWrapper>} />

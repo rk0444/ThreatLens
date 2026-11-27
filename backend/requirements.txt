@@ -7,3 +7,4 @@ requests==2.34.2
 apscheduler==3.11.2
 openai==2.37.0
 psutil==7.2.2
+maxminddb==3.3.0

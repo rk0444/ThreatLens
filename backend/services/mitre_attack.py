@@ -116,38 +116,9 @@ def sync_mitre_data(db: Session):
     # --- Sync MitreGroup rows ---
     for stix_id, grp in intrusion_sets.items():
         desc = grp["description"]
-        country, motivation = "Unknown", "Unknown"
-        aliases_str = " ".join(grp.get("aliases", []))
-        search_text = desc + " " + aliases_str + " " + grp["name"]
-
-        # Expanded country detection
-        COUNTRY_PATTERNS = [
-            ("Russia",       ["Russia", "Russian", "Kremlin", "SVR", "FSB", "GRU", "Sandworm", "Fancy Bear", "Cozy Bear", "Turla", "APT28", "APT29", "Wizard Spider", "Indrik Spider"]),
-            ("China",        ["China", "Chinese", "PRC", "PLA", "MSS", "APT41", "APT1", "APT10", "APT19", "Hafnium", "Volt Typhoon", "Salt Typhoon", "Double Dragon"]),
-            ("Iran",         ["Iran", "Iranian", "IRGC", "OilRig", "APT33", "APT34", "APT35", "MuddyWater", "Charming Kitten", "Magic Hound", "Fox Kitten"]),
-            ("North Korea",  ["North Korea", "DPRK", "Lazarus", "Kimsuky", "APT38", "Bluenoroff", "Andariel", "RGB"]),
-            ("India",        ["India", "Indian", "Donot", "SideWinder", "Patchwork", "APT-C-35"]),
-            ("Pakistan",     ["Pakistan", "Pakistani", "Transparent Tribe", "APT36", "ProjectM"]),
-            ("Vietnam",      ["Vietnam", "Vietnamese", "APT32", "OceanLotus", "APT-C-00"]),
-            ("Turkey",       ["Turkey", "Turkish", "Sea Turtle", "Cosmic Wolf", "Marbled Dust"]),
-            ("Israel",       ["Israel", "Israeli"]),
-            ("USA",          ["United States", "NSA", "CIA", "Equation Group", "Tailored Access"]),
-            ("UK",           ["United Kingdom", "British", "GCHQ", "NCSC"]),
-            ("Ukraine",      ["Ukraine", "Ukrainian"]),
-            ("Belarus",      ["Belarus", "Belarusian", "Ghostwriter", "UNC1151"]),
-            ("Lebanon",      ["Lebanon", "Lebanese", "Hezbollah", "Volatile Cedar", "Dark Caracal"]),
-            ("Syria",        ["Syria", "Syrian", "Syrian Electronic Army"]),
-            ("Nigeria",      ["Nigeria", "Nigerian", "SilverTerrier"]),
-        ]
-        for nation, patterns in COUNTRY_PATTERNS:
-            if any(p in search_text for p in patterns):
-                country = nation
-                break
-
-        dl = desc.lower()
-        if "financial" in dl or "ransomware" in dl: motivation = "Financial"
-        elif "espionage" in dl or "intelligence" in dl: motivation = "Espionage"
-        elif "sabotage" in dl or "disruption" in dl: motivation = "Sabotage"
+        # MITRE publishes no country or motivation field for groups; guessing them from the
+        # description mislabels groups by the countries they target, so they stay empty.
+        country, motivation = None, None
 
         # Build technique list for this group
         gid = grp["mitre_id"]

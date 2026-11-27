@@ -43,6 +43,10 @@ class Asset(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     status: Mapped[str] = mapped_column(String)  # Online, Offline, Vulnerable
+    # Placed by the user on the Attack Map; never inferred
+    latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    location_label: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
 
 class Incident(Base):

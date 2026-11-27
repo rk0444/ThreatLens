@@ -31,6 +31,7 @@ from backend.services.nvd import run_nvd_sync
 from backend.services.asset_filter import rematch_all_cves, matched_software
 from backend.services.osint import fetch_osint_alerts
 from backend.services.abuseipdb import check_ip_reputation
+from backend.services import geoip
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.events import EVENT_JOB_EXECUTED, EVENT_JOB_ERROR
 import threading
@@ -110,11 +111,16 @@ async def lifespan(app: FastAPI):
     # Initialize database tables
     models.Base.metadata.create_all(bind=db.engine)
     # create_all doesn't add columns to existing tables
+    added_columns = {
+        "osint_alerts": (("adversary", "VARCHAR"), ("targeted_countries", "JSON"), ("industries", "JSON")),
+        "assets": (("latitude", "FLOAT"), ("longitude", "FLOAT"), ("location_label", "VARCHAR")),
+    }
     with db.engine.begin() as conn:
-        have = {row[1] for row in conn.execute(text("PRAGMA table_info(osint_alerts)"))}
-        for col, col_type in (("adversary", "VARCHAR"), ("targeted_countries", "JSON"), ("industries", "JSON")):
-            if col not in have:
-                conn.execute(text(f"ALTER TABLE osint_alerts ADD COLUMN {col} {col_type}"))
+        for table, columns in added_columns.items():
+            have = {row[1] for row in conn.execute(text(f"PRAGMA table_info({table})"))}
+            for col, col_type in columns:
+                if col not in have:
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"))
     # Seed data
     db_session = next(db.get_db())
     try:
@@ -530,6 +536,9 @@ async def get_assets(db: Session = Depends(db.get_db)):
             "ip_address": asset.ip_address,
             "last_seen": asset.last_seen.isoformat() if asset.last_seen else None,
             "status": asset.status,
+            "latitude": asset.latitude,
+            "longitude": asset.longitude,
+            "location_label": asset.location_label,
             "risk_score": risk_score,
             "active_incident_count": len(active_incidents),
             "threats_blocked": len(blocked),
@@ -567,6 +576,21 @@ async def delete_asset(asset_id: int, db: Session = Depends(db.get_db)):
 
     await manager.broadcast(json.dumps({"type": "ASSET_DELETED", "data": {"id": asset_id}}))
     return {"status": "success", "message": "Asset deleted"}
+
+
+@app.patch("/api/assets/{asset_id}/location")
+async def set_asset_location(asset_id: int, location: schemas.AssetLocation, db: Session = Depends(db.get_db)):
+    """Pin an asset where the user clicked on the Attack Map; nulls clear it."""
+    asset = db.query(models.Asset).filter(models.Asset.id == asset_id).first()
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    if (location.latitude is None) != (location.longitude is None):
+        raise HTTPException(status_code=422, detail="latitude and longitude must be set together")
+    asset.latitude, asset.longitude = location.latitude, location.longitude
+    asset.location_label = location.location_label if location.latitude is not None else None
+    db.commit()
+    return {"id": asset.id, "latitude": asset.latitude, "longitude": asset.longitude,
+            "location_label": asset.location_label}
 
 
 @app.get("/api/assets/{asset_id}/incidents", response_model=List[schemas.IncidentResponse])
@@ -1132,165 +1156,165 @@ ANALYST QUESTION:
     }
 
 
+# Country centroids for the attack map. OTX names countries in ISO style ("Korea, Republic of"),
+# so COUNTRY_ALIASES maps those spellings onto these keys.
 COUNTRY_COORDS = {
-    "China":        {"lat": 35.86,   "lng": 104.19},
-    "Russia":       {"lat": 55.75,   "lng": 37.61},
-    "Iran":         {"lat": 35.68,   "lng": 51.38},
-    "North Korea":  {"lat": 39.02,   "lng": 125.75},
-    "USA":          {"lat": 37.09,   "lng": -95.71},
-    "UK":           {"lat": 51.50,   "lng": -0.12},
-    "Israel":       {"lat": 31.77,   "lng": 35.21},
-    "Germany":      {"lat": 51.16,   "lng": 10.45},
-    "Ukraine":      {"lat": 48.37,   "lng": 31.16},
-    "Vietnam":      {"lat": 14.05,   "lng": 108.27},
-    "Pakistan":     {"lat": 30.37,   "lng": 69.34},
-    "India":        {"lat": 20.59,   "lng": 78.96},
-    "Brazil":       {"lat": -14.23,  "lng": -51.92},
-    "Turkey":       {"lat": 38.96,   "lng": 35.24},
-    "Belarus":      {"lat": 53.71,   "lng": 27.95},
-    "Lebanon":      {"lat": 33.85,   "lng": 35.86},
-    "Syria":        {"lat": 34.80,   "lng": 38.99},
-    "Nigeria":      {"lat": 9.08,    "lng": 8.67},
-    "South Korea":  {"lat": 35.90,   "lng": 127.76},
-    "France":       {"lat": 46.22,   "lng": 2.21},
-    "Indonesia":    {"lat": -0.78,   "lng": 113.92},
-    "Bangladesh":   {"lat": 23.68,   "lng": 90.35},
-    "Egypt":        {"lat": 26.82,   "lng": 30.80},
-    "Saudi Arabia": {"lat": 23.88,   "lng": 45.08},
+    "Argentina": (-38.42, -63.62), "Australia": (-25.27, 133.78), "Austria": (47.52, 14.55),
+    "Bangladesh": (23.68, 90.36), "Belarus": (53.71, 27.95), "Belgium": (50.50, 4.47),
+    "Brazil": (-14.24, -51.93), "Canada": (56.13, -106.35), "Chile": (-35.68, -71.54),
+    "China": (35.86, 104.20), "Colombia": (4.57, -74.30), "Czechia": (49.82, 15.47),
+    "Denmark": (56.26, 9.50), "Egypt": (26.82, 30.80), "Finland": (61.92, 25.75),
+    "France": (46.23, 2.21), "Germany": (51.17, 10.45), "Greece": (39.07, 21.82),
+    "Hong Kong": (22.32, 114.17), "Hungary": (47.16, 19.50), "India": (20.59, 78.96),
+    "Indonesia": (-0.79, 113.92), "Iran": (32.43, 53.69), "Iraq": (33.22, 43.68),
+    "Ireland": (53.41, -8.24), "Israel": (31.05, 34.85), "Italy": (41.87, 12.57),
+    "Japan": (36.20, 138.25), "Jordan": (30.59, 36.24), "Kazakhstan": (48.02, 66.92),
+    "Kenya": (-0.02, 37.91), "Kuwait": (29.31, 47.48), "Lebanon": (33.85, 35.86),
+    "Malaysia": (4.21, 101.98), "Mexico": (23.63, -102.55), "Morocco": (31.79, -7.09),
+    "Netherlands": (52.13, 5.29), "New Zealand": (-40.90, 174.89), "Nigeria": (9.08, 8.68),
+    "North Korea": (40.34, 127.51), "Norway": (60.47, 8.47), "Pakistan": (30.38, 69.35),
+    "Palestine": (31.95, 35.23), "Peru": (-9.19, -75.02), "Philippines": (12.88, 121.77),
+    "Poland": (51.92, 19.15), "Portugal": (39.40, -8.22), "Qatar": (25.35, 51.18),
+    "Romania": (45.94, 24.97), "Russia": (61.52, 105.32), "Saudi Arabia": (23.89, 45.08),
+    "Singapore": (1.35, 103.82), "South Africa": (-30.56, 22.94), "South Korea": (35.91, 127.77),
+    "Spain": (40.46, -3.75), "Sri Lanka": (7.87, 80.77), "Sweden": (60.13, 18.64),
+    "Switzerland": (46.82, 8.23), "Syria": (34.80, 38.997), "Taiwan": (23.70, 120.96),
+    "Thailand": (15.87, 100.99), "Turkey": (38.96, 35.24), "Ukraine": (48.38, 31.17),
+    "United Arab Emirates": (23.42, 53.85), "United Kingdom": (55.38, -3.44),
+    "United States": (37.09, -95.71), "Venezuela": (6.42, -66.59), "Vietnam": (14.06, 108.28),
 }
- 
+COUNTRY_ALIASES = {
+    "united states of america": "United States", "usa": "United States", "us": "United States",
+    "united kingdom of great britain and northern ireland": "United Kingdom", "uk": "United Kingdom",
+    "russian federation": "Russia", "korea, republic of": "South Korea", "republic of korea": "South Korea",
+    "korea, democratic people's republic of": "North Korea", "iran, islamic republic of": "Iran",
+    "viet nam": "Vietnam", "taiwan, province of china": "Taiwan", "syrian arab republic": "Syria",
+    "czech republic": "Czechia", "turkiye": "Turkey", "türkiye": "Turkey",
+    "palestine, state of": "Palestine", "venezuela, bolivarian republic of": "Venezuela",
+}
+
+
+def _map_country(name: str):
+    """Canonical COUNTRY_COORDS key for an OTX country name, or None if it has no coordinates here."""
+    name = (name or "").strip()
+    if name in COUNTRY_COORDS:
+        return name
+    return COUNTRY_ALIASES.get(name.lower()) or next((k for k in COUNTRY_COORDS if k.lower() == name.lower()), None)
+
+
 @app.get("/api/attack-map")
 async def get_attack_map(db: Session = Depends(db.get_db)):
+    """Countries that OTX pulses list as targeted, with the adversaries and sectors those pulses name.
+
+    Only published structured fields are used; nothing is inferred from text, and there is no
+    composite threat score. Adversaries are linked to MITRE ATT&CK groups by exact name/alias.
+    """
     from collections import defaultdict
-    import json as _json
- 
-    # 1. Real MITRE groups
-    mg_rows = db.execute(text(
-        "SELECT mitre_id, name, country, motivation, techniques, aliases FROM mitre_groups"
-    )).fetchall()
- 
-    actor_index = {}
-    alias_to_actor = {}
-    for mitre_id, name, country, motivation, techniques, aliases in mg_rows:
-        for alias in [name] + (_json.loads(aliases) if aliases else []):
-            alias_to_actor[alias.lower()] = name
-        tech_list = []
-        if techniques:
-            try:
-                tech_list = _json.loads(techniques)[:8]
-            except Exception:
-                pass
-        actor_index[name] = {
-            "mitre_id": mitre_id,
-            "country": country or "Unknown",
-            "motivation": motivation or "Unknown",
-            "techniques": tech_list,
-        }
- 
-    # 4. Active incidents â€” MITRE tag matching
-    inc_rows = db.execute(text("""
-        SELECT mitre_tags, severity FROM incidents
-        WHERE status != 'Resolved' ORDER BY created_at DESC LIMIT 50
-    """)).fetchall()
- 
-    active_incident_count = len(inc_rows)
-    incident_actor_hits = defaultdict(int)
-    for tags, sev in inc_rows:
-        if tags:
-            try:
-                for tag in _json.loads(tags):
-                    for aname in actor_index:
-                        if aname.lower() in tag.lower():
-                            incident_actor_hits[aname] += 1
-            except Exception:
-                pass
- 
-    # 5. OSINT alerts: attribution and sectors only from the feed's own structured fields
-    osint_rows = db.execute(text("""
-        SELECT indicator, description, severity, adversary, industries
-        FROM osint_alerts ORDER BY created_at DESC LIMIT 200
-    """)).fetchall()
- 
-    osint_actor_hits  = defaultdict(int)
-    osint_sectors     = defaultdict(int)
-    ticker_items      = []
- 
-    for indicator, description, severity, adversary, industries in osint_rows:
-        actor = alias_to_actor.get((adversary or "").strip().lower())
-        if actor:
-            osint_actor_hits[actor] += 1
-        for sector in (_json.loads(industries) if industries else []):
-            osint_sectors[sector] += 1
- 
-        short = (indicator or description or "")[:120]
-        sev_tag = "[RED]" if severity == "High" else "[ORANGE]" if severity == "Medium" else "[WHITE]"
-        ticker_items.append(f"{sev_tag} {short}")
- 
-    # 6. Build country nodes (MITRE group origin countries)
-    country_data = defaultdict(lambda: {"actors": [], "osint_count": 0, "activity_score": 0})
- 
-    for aname, ainfo in actor_index.items():
-        country = ainfo["country"]
-        if country == "Unknown" or country not in COUNTRY_COORDS:
-            continue
- 
-        inc_hits   = incident_actor_hits.get(aname, 0)
-        osint_hits = osint_actor_hits.get(aname, 0)
- 
-        country_data[country]["actors"].append({
-            "name": aname,
-            "mitre_id": ainfo["mitre_id"],
-            "motivation": ainfo["motivation"],
-            "techniques": ainfo["techniques"],
-            "incident_hits": inc_hits,
-            "osint_hits": osint_hits,
-        })
-        country_data[country]["osint_count"]    += osint_hits
-        country_data[country]["activity_score"] += inc_hits * 5 + osint_hits * 3
- 
-    # 7. Serialize
+
+    alias_to_group = {}
+    for g in db.query(models.MitreGroup).all():
+        for alias in [g.name] + (g.aliases or []):
+            alias_to_group[alias.lower()] = g
+
+    alerts = db.query(models.OSINTAlert).order_by(models.OSINTAlert.created_at.desc()).all()
+    countries = defaultdict(lambda: {"alerts": [], "actors": {}, "sectors": defaultdict(int)})
+    unmapped = set()
+    alerts_with_countries = 0
+    for alert in alerts:
+        if alert.targeted_countries:
+            alerts_with_countries += 1
+        mapped = set()  # one count per alert, even if it spells a country two ways
+        for raw_country in alert.targeted_countries or []:
+            country = _map_country(raw_country)
+            if country:
+                mapped.add(country)
+            else:
+                unmapped.add(raw_country)
+        for country in mapped:
+            entry = countries[country]
+            entry["alerts"].append({"indicator": alert.indicator, "severity": alert.severity, "source": alert.source})
+            for sector in alert.industries or []:
+                entry["sectors"][sector] += 1
+            adversary = (alert.adversary or "").strip()
+            if adversary:
+                group = alias_to_group.get(adversary.lower())
+                # one entry per actor however OTX spells it
+                actor = entry["actors"].setdefault(group.mitre_id if group else adversary.lower(), {
+                    "name": group.name if group else adversary,
+                    "mitre_id": group.mitre_id if group else None,
+                    "techniques": (group.techniques or [])[:8] if group else [],
+                    "alert_count": 0,
+                })
+                actor["alert_count"] += 1
+
     nodes = []
-    for country, data in country_data.items():
-        coords = COUNTRY_COORDS[country]
-        score  = data["activity_score"]
-        threat_level = (
-            "critical" if score >= 25 else
-            "high"     if score >= 10 else
-            "medium"   if score >= 3  else
-            "low"
-        )
+    for country, entry in countries.items():
+        lat, lng = COUNTRY_COORDS[country]
         nodes.append({
-            "country":        country,
-            "lat":            coords["lat"],
-            "lng":            coords["lng"],
-            "threat_level":   threat_level,
-            "activity_score": score,
-            "actor_count":    len(data["actors"]),
-            "osint_count":    data["osint_count"],
-            "sectors":        [s for s, _ in sorted(osint_sectors.items(), key=lambda kv: -kv[1])][:5],
-            "actors":         sorted(
-                data["actors"],
-                key=lambda a: a["incident_hits"] * 5 + a["osint_hits"] * 3,
-                reverse=True
-            )[:10],
+            "country": country,
+            "lat": lat,
+            "lng": lng,
+            "alert_count": len(entry["alerts"]),
+            "recent_alerts": entry["alerts"][:5],
+            "sectors": [s for s, _ in sorted(entry["sectors"].items(), key=lambda kv: -kv[1])],
+            "actors": sorted(entry["actors"].values(), key=lambda a: -a["alert_count"]),
         })
- 
-    nodes.sort(key=lambda n: n["activity_score"], reverse=True)
- 
-    total_cves = db.execute(text("SELECT COUNT(*) FROM cves")).fetchone()[0]
-    kev_count  = db.execute(text("SELECT COUNT(*) FROM cisa_kev")).fetchone()[0]
-    osint_total = db.execute(text("SELECT COUNT(*) FROM osint_alerts")).fetchone()[0]
- 
+    nodes.sort(key=lambda n: -n["alert_count"])
+
+    ticker = []
+    for alert in alerts[:20]:
+        tag = "[RED]" if alert.severity == "High" else "[ORANGE]" if alert.severity == "Medium" else "[WHITE]"
+        ticker.append(f"{tag} {(alert.indicator or alert.description or '')[:120]}")
+
+    # Your assets, at the exact spot the user placed them, with their open incidents
+    severity_rank = {"Critical": 4, "High": 3, "Medium": 2, "Low": 1}
+    asset_pins = []
+    for asset in db.query(models.Asset).filter(models.Asset.latitude.isnot(None)).all():
+        open_incidents = db.query(models.Incident).filter(
+            models.Incident.machine_id == asset.id, models.Incident.status != "Resolved"
+        ).order_by(models.Incident.created_at.desc()).all()
+        asset_pins.append({
+            "id": asset.id, "name": asset.name, "os": asset.os, "ip_address": asset.ip_address,
+            "status": asset.status, "last_seen": str(asset.last_seen) if asset.last_seen else None,
+            "lat": asset.latitude, "lng": asset.longitude, "location_label": asset.location_label,
+            "highest_severity": max((i.severity for i in open_incidents),
+                                    key=lambda sev: severity_rank.get(sev, 0), default=None),
+            "open_incidents": [{"id": i.id, "type": i.type, "severity": i.severity, "details": i.details,
+                                "created_at": str(i.created_at)} for i in open_incidents],
+        })
+
+    # Malicious IPs, placed approximately by GeoIP (attacker infrastructure, not targets)
+    ip_areas = []
+    seen_ips = set()
+    sources = [(c.destination_ip, {"abuse_score": c.abuse_score, "machine": c.machine_hostname,
+                                   "last_seen": str(c.last_seen), "source": "Flagged connection"})
+               for c in db.query(models.FlaggedConnection).all()]
+    sources += [(a.indicator, {"abuse_score": None, "machine": None, "last_seen": str(a.created_at),
+                               "source": "IOC Hunter"})
+                for a in alerts if a.source == "IOC Hunter" and (a.type or "").upper() == "IP"]
+    for ip, info in sources:
+        if ip in seen_ips:
+            continue
+        seen_ips.add(ip)
+        place = geoip.locate(ip)
+        if place and place["accuracy_km"]:  # without MaxMind's radius there's no honest area to draw
+            ip_areas.append({"ip": ip, **place, **info})
+
     return {
-        "nodes":   nodes,
-        "ticker":  ticker_items[:20] or ["[WHITE] Monitoring all feeds â€” no active alerts"],
+        "nodes": nodes,
+        "asset_pins": asset_pins,
+        "ip_areas": ip_areas,
+        "geoip_configured": geoip.configured(),
+        "unmapped_countries": sorted(unmapped),
+        "ticker": ticker or ["[WHITE] No OSINT alerts yet"],
         "summary": {
-            "active_countries": len(nodes),
-            "tracked_actors":   sum(n["actor_count"] for n in nodes),
-            "total_cves":       total_cves,
-            "kev_count":        kev_count,
-            "osint_alerts":     osint_total,
-            "active_incidents": active_incident_count,
+            "targeted_countries": len(nodes),
+            "named_actors": len({a["name"] for n in nodes for a in n["actors"]}),
+            "osint_alerts": len(alerts),
+            "alerts_with_countries": alerts_with_countries,
+            "total_cves": db.query(models.CVE).count(),
+            "kev_count": db.query(models.CisaKev).count(),
+            "active_incidents": db.query(models.Incident).filter(models.Incident.status != "Resolved").count(),
         },
     }
 

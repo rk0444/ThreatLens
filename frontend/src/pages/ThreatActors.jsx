@@ -104,8 +104,7 @@ const ThreatActors = () => {
       const term = searchTerm.toLowerCase();
       const country = getCountryInfo(actor.country);
       return actor.name.toLowerCase().includes(term) ||
-             country.name.toLowerCase().includes(term) ||
-             (actor.country && actor.country.toLowerCase().includes(term)) ||
+             (actor.country && (country.name.toLowerCase().includes(term) || actor.country.toLowerCase().includes(term))) ||
              (actor.aliases && actor.aliases.join(' ').toLowerCase().includes(term)) ||
              (actor.mitre_id && actor.mitre_id.toLowerCase().includes(term)) ||
              (actor.motivation && actor.motivation.toLowerCase().includes(term));
@@ -133,7 +132,7 @@ const ThreatActors = () => {
           results.push({ text: a.mitre_id, category: 'MITRE ID', icon: Tag, value: a.mitre_id });
       }
       const country = getCountryInfo(a.country);
-      if (country.name.toLowerCase().includes(term) && results.length < 5) {
+      if (a.country && country.name.toLowerCase().includes(term) && results.length < 5) {
         if (!results.find(r => r.text === country.name))
           results.push({ text: country.name, category: 'Country', icon: Flag, value: country.name });
       }
@@ -142,13 +141,10 @@ const ThreatActors = () => {
     setSuggestions(results.slice(0, 5));
   }, [searchTerm, actors]);
 
+  // Only motivations a source actually published (MITRE publishes none today)
   const motivationOptions = [
     { value: 'All', label: 'All' },
-    { value: 'Espionage', label: 'Espionage' },
-    { value: 'Financial', label: 'Financial' },
-    { value: 'Sabotage', label: 'Sabotage' },
-    { value: 'Ransomware', label: 'Ransomware' },
-    { value: 'Hacktivism', label: 'Hacktivism' },
+    ...[...new Set(actors.map(a => a.motivation).filter(Boolean))].sort().map(m => ({ value: m, label: m })),
   ];
 
   return (
@@ -276,14 +272,14 @@ const ThreatActors = () => {
           </div>
         </div>
 
-        {/* 5. Filter Dropdown (180px) */}
-        <div style={{ width: '180px', flexShrink: 0, marginLeft: '12px' }}>
+        {/* 5. Filter Dropdown (180px), hidden while no motivation is published */}
+        {motivationOptions.length > 1 && <div style={{ width: '180px', flexShrink: 0, marginLeft: '12px' }}>
           <CustomDropdown 
             options={motivationOptions}
             value={filter}
             onChange={(val) => setFilter(val)}
           />
-        </div>
+        </div>}
       </div>
 
       {/* ── Card Grid ── */}
@@ -344,12 +340,15 @@ const ThreatActors = () => {
                       flexWrap: 'wrap',
                     }}>
                       <Highlight text={actor.name} highlight={searchTerm} />
-                      <span style={{ fontSize: '1.1rem' }}>{flag}</span>
-                      <span style={{ fontWeight: 400, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                        <Highlight text={countryName} highlight={searchTerm} />
-                      </span>
+                      {actor.country && (<>
+                        <span style={{ fontSize: '1.1rem' }}>{flag}</span>
+                        <span style={{ fontWeight: 400, fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                          <Highlight text={countryName} highlight={searchTerm} />
+                        </span>
+                      </>)}
                     </div>
                   </div>
+                  {actor.motivation && (
                   <span style={{
                     flexShrink: 0,
                     marginLeft: '8px',
@@ -364,8 +363,9 @@ const ThreatActors = () => {
                     letterSpacing: '0.6px',
                     whiteSpace: 'nowrap',
                   }}>
-                    {actor.motivation || 'Unknown'}
+                    {actor.motivation}
                   </span>
+                  )}
                 </div>
 
                 {/* ── DIVIDER ── */}
@@ -429,7 +429,7 @@ const ThreatActors = () => {
                 <div className="label-small">{selectedActor.group.mitre_id}</div>
                 <h2>
                   {selectedActor.group.name}{' '}
-                  {getCountryInfo(selectedActor.group.country).flag}
+                  {selectedActor.group.country && getCountryInfo(selectedActor.group.country).flag}
                 </h2>
               </div>
               <button className="close-btn" onClick={() => setSelectedActor(null)}>✕</button>
@@ -440,12 +440,14 @@ const ThreatActors = () => {
                 <div style={{ background: 'rgba(255,255,255,0.05)', padding: '0.5rem 1rem', borderRadius: '4px' }}>
                   <div className="label-small" style={{ fontSize: '0.7rem' }}>Origin</div>
                   <div style={{ fontWeight: 600 }}>
-                    {getCountryInfo(selectedActor.group.country).flag} {selectedActor.group.country}
+                    {selectedActor.group.country
+                      ? `${getCountryInfo(selectedActor.group.country).flag} ${selectedActor.group.country}`
+                      : 'Not published by MITRE'}
                   </div>
                 </div>
                 <div style={{ background: 'rgba(255,255,255,0.05)', padding: '0.5rem 1rem', borderRadius: '4px' }}>
                   <div className="label-small" style={{ fontSize: '0.7rem' }}>Motivation</div>
-                  <div style={{ fontWeight: 600 }}>{selectedActor.group.motivation}</div>
+                  <div style={{ fontWeight: 600 }}>{selectedActor.group.motivation || 'Not published by MITRE'}</div>
                 </div>
               </div>
 

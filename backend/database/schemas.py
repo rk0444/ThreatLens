@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from datetime import datetime, timezone
 from typing import List, Optional
 
@@ -40,6 +40,16 @@ class AssetBase(BaseModel):
     software_list: List[str]
     ip_address: str
     status: str
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    location_label: Optional[str] = None
+
+
+class AssetLocation(BaseModel):
+    """Where the user placed an asset; all null clears it."""
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
+    location_label: Optional[str] = Field(None, max_length=200)
 
 
 class AssetCreate(AssetBase):
