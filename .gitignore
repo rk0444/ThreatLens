@@ -62,3 +62,6 @@ ENV/
 .idea/
 .DS_Store
 Thumbs.db
+
+# MaxMind GeoLite2 database (licensed, downloaded per machine)
+*.mmdb
