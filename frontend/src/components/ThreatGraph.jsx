@@ -22,6 +22,8 @@ const ThreatGraph = ({ highlightedNodeId }) => {
       });
   }, []);
 
+  const focusInGraph = Boolean(highlightedNodeId) && data.nodes.some(n => n.id === highlightedNodeId);
+
   // Zoom to node when highlighted
   useEffect(() => {
     if (highlightedNodeId && fgRef.current && data.nodes.length > 0) {
@@ -41,6 +43,11 @@ const ThreatGraph = ({ highlightedNodeId }) => {
   return (
     <div className="glass-panel" style={{ height: '500px', overflow: 'hidden', position: 'relative' }} ref={containerRef}>
       <div className="label-small" style={{ position: 'absolute', top: '15px', left: '15px', zIndex: 10 }}>Threat Intelligence Graph · top 20 CVEs by risk → weakness type (CWE, from NVD)</div>
+      {highlightedNodeId && !loading && !focusInGraph && (
+        <div className="label-small" style={{ position: 'absolute', top: '40px', left: '15px', zIndex: 10, color: 'var(--text-secondary)' }}>
+          {highlightedNodeId} is not among the top 20 CVEs shown in this graph.
+        </div>
+      )}
       {loading ? (
         <div className="skeleton" style={{ height: '100%', width: '100%' }}></div>
       ) : (
@@ -57,7 +64,7 @@ const ThreatGraph = ({ highlightedNodeId }) => {
             const bckgDimensions = [textWidth, fontSize].map(n => n + fontSize * 0.2);
 
             const isHighlighted = highlightedNodeId === node.id;
-            const isDimmed = highlightedNodeId && !isHighlighted;
+            const isDimmed = focusInGraph && !isHighlighted;
 
             ctx.fillStyle = isDimmed ? 'rgba(13, 27, 42, 0.2)' : 'rgba(13, 27, 42, 0.8)';
             if (isHighlighted) {

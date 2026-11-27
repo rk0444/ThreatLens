@@ -1,3 +1,4 @@
+import json
 import requests
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -43,7 +44,7 @@ def evidence_flags(cve_data: dict, cisa_kev=False, kev_ransomware=False):
     return exploited, ransomware, patch_available
 
 
-def fetch_latest_cves(db_session: Session):
+def fetch_latest_cves(db_session: Session, notify=None):
     _log_scheduler("started")
     ingested = 0
     updated = 0
@@ -127,6 +128,8 @@ def fetch_latest_cves(db_session: Session):
                 ingested += 1
 
         _log_scheduler("success", f"Ingested {ingested} new, updated {updated} existing CVEs")
+        if notify and ingested:
+            notify(json.dumps({"type": "CVES_UPDATED", "data": {"ingested": ingested}}))
         print(f"[nvd] Done. Ingested {ingested} new, updated {updated} existing.")
 
     except Exception as e:
@@ -136,12 +139,12 @@ def fetch_latest_cves(db_session: Session):
         print(f"[nvd] Error: {err}")
 
 
-def run_nvd_sync():
-    """Scheduler wrapper — creates its own DB session."""
+def run_nvd_sync(notify=None):
+    """Scheduler wrapper — creates its own DB session. notify(str) broadcasts to open pages."""
     from backend.database.db import SessionLocal
     session = SessionLocal()
     try:
-        fetch_latest_cves(session)
+        fetch_latest_cves(session, notify)
     except Exception as e:
         print(f"[nvd_sync] failed: {e}")
     finally:

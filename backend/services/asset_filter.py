@@ -37,7 +37,8 @@ def matched_software(cve: models.CVE, software_list) -> list:
 
 
 def _match_assets(cve: models.CVE, assets) -> None:
-    """Store which assets a CVE affects (by NVD CPE data) and recompute its risk score."""
+    """Store affected products and matching assets (by NVD CPE data), then recompute the risk score."""
+    cve.affected_products = sorted({p.replace("_", " ") for _, p in cpe_products(cve)})
     affected_count = sum(1 for asset in assets if matched_software(cve, asset.software_list))
     cve.asset_affected = affected_count > 0
     cve.affected_asset_count = affected_count

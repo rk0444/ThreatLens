@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func, text
 from typing import List, Optional
 import json
+import asyncio
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 import logging
@@ -65,11 +66,21 @@ class ConnectionManager:
         self.active_connections.remove(websocket)
 
     async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            await connection.send_text(message)
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_text(message)
+            except Exception:
+                self.disconnect(connection)
 
 
 manager = ConnectionManager()
+app_loop = None  # set in lifespan; scheduler jobs run in threads and must hop onto it
+
+
+def notify(message: str):
+    """Broadcast from a scheduler thread onto the app's event loop."""
+    if app_loop is not None:
+        asyncio.run_coroutine_threadsafe(manager.broadcast(message), app_loop)
 
 # Seed mock data logic
 # Scheduler reliability helpers
@@ -124,13 +135,16 @@ async def lifespan(app: FastAPI):
     finally:
         db_session.close()
     
+    global app_loop
+    app_loop = asyncio.get_running_loop()
+
     # Start Scheduler
     scheduler = BackgroundScheduler()
     scheduler.add_listener(scheduler_event_listener, EVENT_JOB_EXECUTED | EVENT_JOB_ERROR)
     
     # Trigger jobs immediately, then on interval
     scheduler.add_job(
-        lambda: safe_run_job(run_nvd_sync, "NVD Sync"),
+        lambda: safe_run_job(lambda: run_nvd_sync(notify), "NVD Sync"),
         'interval', minutes=15, next_run_time=datetime.now(),
         misfire_grace_time=300, id="nvd_sync"
     )
@@ -396,6 +410,7 @@ async def get_cves(
     limit: int = 50,
     severity: Optional[float] = None,
     epss_min: Optional[float] = None,
+    epss_pct_min: Optional[float] = None,
     sort: Optional[str] = None,
     band: Optional[str] = None,
     affected_only: bool = False,
@@ -408,6 +423,8 @@ async def get_cves(
         query = query.filter(models.CVE.cvss_score >= severity)
     if epss_min:
         query = query.filter(models.CVE.epss_score >= epss_min)
+    if epss_pct_min:
+        query = query.filter(models.CVE.epss_percentile >= epss_pct_min)
     if band:
         query = query.filter(models.CVE.risk_band == band.upper())
 

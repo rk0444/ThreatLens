@@ -4,14 +4,15 @@ import { motion, AnimatePresence } from 'framer-motion';
 import ThreatGraph from '../components/ThreatGraph';
 import CveDrawer from '../components/CveDrawer';
 import CustomDropdown from '../components/CustomDropdown';
-import { getRiskScore, getRiskColor } from '../utils/riskScore';
+import { getRiskColor } from '../utils/riskScore';
 
 const GlobalThreats = () => {
   const [cves, setCves] = useState([]);
   const [selectedCve, setSelectedCve] = useState(null);
-  const [selectedActors, setSelectedActors] = useState([]);
   const [graphFocus, setGraphFocus] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [limit, setLimit] = useState(50);
   const [filters, setFilters] = useState({
     severity: 'All Severities',
     epssMin: 0,
@@ -35,13 +36,10 @@ const GlobalThreats = () => {
   { value: 'Low', label: 'Low' },
 ];
 
-  const getSeverityTier = (score) => {
-    if (score >= 86) return { label: 'CRITICAL', className: 'severity-critical' };
-    if (score >= 61) return { label: 'HIGH', className: 'severity-high' };
-    if (score >= 31) return { label: 'MEDIUM', className: 'severity-medium' };
-    if (score >= 1) return { label: 'LOW', className: 'severity-low' };
-    return { label: 'INFO', className: 'severity-info' };
-  };
+  // Score and band come from the server (backend/services/scoring.py), so the label always
+  // matches the severity filter. Bands start at whole numbers, so flooring keeps them consistent.
+  const riskOf = (cve) => Math.floor(cve.risk_score ?? 0);
+  const bandOf = (cve) => (cve.risk_band || 'LOW').toUpperCase();
 
   const formatAffectedProducts = (products) => {
     if (!products || !Array.isArray(products) || products.length === 0) {
@@ -59,13 +57,14 @@ const GlobalThreats = () => {
     const params = new URLSearchParams({ sort: sortParam[filters.sortBy] });
     if (filters.myAssetsOnly) params.append('affected_only', 'true');
     if (filters.severity !== 'All Severities') params.append('band', filters.severity);
-    if (filters.epssMin > 0) params.append('epss_min', filters.epssMin);
+    if (filters.epssMin > 0) params.append('epss_pct_min', filters.epssMin);
+    params.append('limit', limit);
 
     fetch(`http://127.0.0.1:8000/api/cves?${params.toString()}`)
       .then(res => res.json())
       .then(data => {
-        console.log(data);
         setCves(Array.isArray(data) ? data : (data.cves || []));
+        setLastUpdated(new Date());
         setLoading(false);
       })
       .catch(err => {
@@ -81,40 +80,19 @@ const GlobalThreats = () => {
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.type === 'NEW_CVE' || data.type === 'OSINT_ALERT') {
-          // If we are in asset-aware mode, only add if it affects an asset
-          if (filters.myAssetsOnly && !data.data.asset_affected) return;
-          setCves(prev => Array.isArray(prev) ? [data.data, ...prev] : [data.data]);
-        }
+        // New CVEs were ingested: refetch so they go through the same filters and sort
+        if (data.type === 'CVES_UPDATED') fetchCves();
       } catch (e) {
         console.error("WebSocket message error:", e);
       }
     };
     return () => socket.close();
-  }, [filters.myAssetsOnly, filters.severity, filters.sortBy, filters.epssMin]);
+  }, [filters.myAssetsOnly, filters.severity, filters.sortBy, filters.epssMin, limit]);
 
-  useEffect(() => {
-    if (selectedCve) {
-      fetch(`http://127.0.0.1:8000/api/cves/${selectedCve.cve_id}/threat-actors`)
-        .then(res => res.json())
-        .then(data => setSelectedActors(data))
-        .catch(err => console.error(err));
-    } else {
-      setSelectedActors([]);
-    }
-  }, [selectedCve]);
-
-
-  const filteredCves = cves.filter(cve => {
-    // Severity band is filtered server-side (stored risk_band)
-    if (cve.epss_score < filters.epssMin) return false;
-    if (filters.myAssetsOnly && !cve.asset_affected) return false;
-    return true;
-  });
-
-  const sortedCves = [...filteredCves].sort((a, b) => {
-    const scoreA = getRiskScore(a);
-    const scoreB = getRiskScore(b);
+  // Filtering happens server-side; this only adds tie-breakers to the server's order
+  const sortedCves = [...cves].sort((a, b) => {
+    const scoreA = a.risk_score ?? 0;
+    const scoreB = b.risk_score ?? 0;
     const dateA = new Date(a.published_date || 0).getTime();
     const dateB = new Date(b.published_date || 0).getTime();
     const epssA = a.epss_score || 0;
@@ -149,7 +127,7 @@ const GlobalThreats = () => {
           <h1>Global <span className="italic-serif">Threats</span></h1>
           <div className="status-badge" style={{ marginTop: '0.5rem', width: 'fit-content' }}>
             <div className="status-dot"></div>
-            <span>LIVE — Last updated: {new Date().toLocaleTimeString()}</span>
+            <span>LIVE — Last updated: {lastUpdated ? lastUpdated.toLocaleTimeString() : '…'}</span>
           </div>
         </div>
 
@@ -172,7 +150,7 @@ const GlobalThreats = () => {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Activity size={16} color="var(--text-secondary)" />
-            <span style={{ fontSize: '0.8rem' }}>EPSS Min: {filters.epssMin}</span>
+            <span style={{ fontSize: '0.8rem' }} title="Only CVEs whose EPSS score is higher than this share of all scored CVEs">EPSS percentile ≥ {Math.round(filters.epssMin * 100)}</span>
             <input 
               type="range" min="0" max="1" step="0.1" 
               value={filters.epssMin}
@@ -241,13 +219,21 @@ const GlobalThreats = () => {
                 {loading ? (
                   [1,2,3,4,5].map(i => (
                     <motion.tr key={`loading-${i}`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                      <td colSpan="8" style={{ padding: '1rem' }}><div className="skeleton" style={{ height: '20px' }}></div></td>
+                      <td colSpan="9" style={{ padding: '1rem' }}><div className="skeleton" style={{ height: '20px' }}></div></td>
                     </motion.tr>
                   ))
+                ) : sortedCves.length === 0 ? (
+                  <tr key="empty">
+                    <td colSpan="9" style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+                      {filters.myAssetsOnly
+                        ? 'No CVEs match your assets. Matching uses the products NVD lists for each CVE against the software your assets report.'
+                        : 'No CVEs match these filters.'}
+                    </td>
+                  </tr>
                 ) : (
                   sortedCves.map(cve => {
-                    const riskScore = getRiskScore(cve);
-                    const tier = getSeverityTier(riskScore);
+                    const riskScore = riskOf(cve);
+                    const band = bandOf(cve);
                     return (
                       <motion.tr 
                         key={cve.id} 
@@ -264,8 +250,8 @@ const GlobalThreats = () => {
                             <div className="risk-badge" style={{ borderColor: getRiskColor(riskScore) }}>
                               {riskScore}
                             </div>
-                            <span className={`severity-badge ${tier.className}`}>
-                              {tier.label}
+                            <span className={`severity-badge severity-${band.toLowerCase()}`}>
+                              {band}
                             </span>
                           </div>
                         </td>
@@ -274,12 +260,27 @@ const GlobalThreats = () => {
                           {cve.description}
                         </td>
                         <td>{cve.cvss_score}</td>
-                        <td>{(cve.epss_score * 100).toFixed(1)}%</td>
                         <td>
-                          {cve.actively_exploited ? (
-                            <span style={{ color: '#fc8181', fontWeight: 600, fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                          {cve.epss_score == null ? (
+                            <span style={{ color: 'var(--text-muted)' }} title="EPSS has not scored this CVE yet">—</span>
+                          ) : (
+                            <>
+                              {(cve.epss_score * 100).toFixed(1)}%
+                              {cve.epss_percentile != null && (
+                                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginLeft: '0.3rem' }}>p{Math.round(cve.epss_percentile * 100)}</span>
+                              )}
+                            </>
+                          )}
+                        </td>
+                        <td>
+                          {cve.cisa_kev ? (
+                            <span title="On CISA's Known Exploited Vulnerabilities list" style={{ color: '#fc8181', fontWeight: 600, fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
                               <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#fc8181', animation: 'pulseCritical 2s infinite' }}></div>
-                              {cve.ransomware_use ? '☠ RANSOM' : '● LIVE'}
+                              {cve.ransomware_use ? '☠ KEV · RANSOM' : '● KEV · IN THE WILD'}
+                            </span>
+                          ) : cve.actively_exploited ? (
+                            <span title="NVD links a public exploit; no confirmed exploitation in the wild" style={{ color: '#f6ad55', fontSize: '0.8rem' }}>
+                              Public exploit
                             </span>
                           ) : (
                             <span style={{ color: 'var(--text-muted)' }}>—</span>
@@ -297,6 +298,11 @@ const GlobalThreats = () => {
               </AnimatePresence>
             </tbody>
           </table>
+          {!loading && cves.length >= limit && (
+            <button className="gold-button" style={{ margin: '1rem auto', display: 'block' }} onClick={() => setLimit(limit + 50)}>
+              Load 50 more
+            </button>
+          )}
         </div>
       </div>
 

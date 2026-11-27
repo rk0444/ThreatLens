@@ -31,6 +31,7 @@ def test_asset_match_sets_count_clears_and_rescores():
     assets = [SimpleNamespace(software_list=["OpenSSL 3.0"]), SimpleNamespace(software_list=["nginx", "Python 3.10"])]
     _match_assets(cve, assets)
     assert (cve.asset_affected, cve.affected_asset_count, cve.risk_band) == (True, 1, "CRITICAL")
+    assert cve.affected_products == ["openssl"]
     _match_assets(cve, [])  # asset removed -> match cleared, back to KEV floor
     assert (cve.asset_affected, cve.affected_asset_count, cve.risk_band) == (False, 0, "HIGH")
     cve.raw_json = {}  # NVD hasn't analysed the CVE yet -> no match
