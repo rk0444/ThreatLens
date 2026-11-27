@@ -1369,181 +1369,109 @@ async def get_attack_map(db: Session = Depends(db.get_db)):
 import re as _re
 
 def _detect_ioc_type(value: str) -> str:
-    """Classify a raw IOC string into: ip | hash | url | domain"""
+    """Classify a raw IOC string into: ip | hash | url | domain | unknown"""
+    import ipaddress
     v = value.strip()
-    # IP address
-    if _re.match(r'^\d{1,3}(\.\d{1,3}){3}$', v):
+    try:
+        ipaddress.ip_address(v)  # IPv4 or IPv6, with real range checks
         return "ip"
-    # File hash â€” MD5 (32), SHA1 (40), SHA256 (64)
-    if _re.match(r'^[a-fA-F0-9]{32}$', v) or \
-       _re.match(r'^[a-fA-F0-9]{40}$', v) or \
-       _re.match(r'^[a-fA-F0-9]{64}$', v):
+    except ValueError:
+        pass
+    if _re.fullmatch(r"[a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64}", v):  # MD5, SHA-1, SHA-256
         return "hash"
-    # URL
-    if v.startswith("http://") or v.startswith("https://"):
+    if v.lower().startswith(("http://", "https://")):
         return "url"
-    # Domain (fallback)
-    if _re.match(r'^([a-zA-Z0-9\-]+\.)+[a-zA-Z]{2,}$', v):
+    if _re.fullmatch(r"([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}", v):
         return "domain"
     return "unknown"
 
 
-@app.post("/api/ioc/lookup")
-async def ioc_lookup(request: Request, db: Session = Depends(db.get_db)):
-    """
-    IOC Hunter â€” paste any IP, file hash, URL, or domain.
-    Fans out to AbuseIPDB, VirusTotal, and local OSINT DB in parallel.
-    Returns a unified threat report.
-    """
-    import asyncio
-    import os
-    from concurrent.futures import ThreadPoolExecutor
-    from backend.services.abuseipdb import check_ip_reputation
-    from backend.services.virustotal import check_file_hash, check_url_reputation
+def _ioc_verdict(sources: dict, ioc_type: str, private: bool) -> tuple:
+    """(verdict, risk, checked_by) from what each source actually answered; never "clean" by default."""
+    blocklist, abuse, vt = sources.get("blocklist", {}), sources.get("abuseipdb", {}), sources.get("virustotal", {})
+    if blocklist.get("found") or abuse.get("is_malicious"):
+        return "Malicious", "high", None
+    if (vt.get("malicious") or 0) > 0:  # VirusTotal publishes per-engine counts, not a verdict: report the count
+        return "Flagged", "high", None
+    if private:
+        return "Not checked", "unknown", None
+    checked_by = []
+    if "found" in blocklist:
+        checked_by.append("published blocklists")
+    if "score" in abuse:
+        checked_by.append("AbuseIPDB")
+    if vt.get("found"):
+        checked_by.append("VirusTotal")
+    if (abuse.get("score") or 0) > 0:
+        return "Reported", "low", checked_by
+    if "AbuseIPDB" in checked_by or "VirusTotal" in checked_by:
+        return "Not flagged", "none", checked_by
+    return "Unknown", "unknown", checked_by  # no reputation source had data on it
 
-    body = await request.json()
-    raw = (body.get("ioc") or "").strip()
+
+@app.post("/api/ioc/lookup")
+def ioc_lookup(body: schemas.IOCLookup, db: Session = Depends(db.get_db)):
+    """IOC Hunter: one IP, hash, URL or domain checked against published blocklists, AbuseIPDB and VirusTotal.
+
+    A plain def: FastAPI runs it in a worker thread, so slow external lookups don't stall other requests.
+    """
+    import ipaddress
+    from backend.services.abuseipdb import check_ip_reputation
+    from backend.services.virustotal import check_file_hash, check_url_reputation, check_domain_reputation
+
+    raw = body.ioc.strip()
     if not raw:
         raise HTTPException(status_code=400, detail="ioc field is required")
-
     ioc_type = _detect_ioc_type(raw)
     if ioc_type == "unknown":
-        raise HTTPException(status_code=422, detail=f"Could not classify IOC: '{raw}'")
+        raise HTTPException(status_code=422, detail=f"Not an IP address, file hash, URL or domain: '{raw}'")
 
-    results = {
-        "ioc":      raw,
-        "type":     ioc_type,
-        "sources":  {},
-        "verdict":  "Unknown",
-        "risk":     "none",   # none | low | medium | high | critical
-        "tags":     [],
-    }
-
-    # â”€â”€ 1. Local OSINT DB match â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    osint_match = db.query(models.OSINTAlert).filter(
-        models.OSINTAlert.indicator.ilike(f"%{raw}%")
-    ).first()
-    if osint_match:
-        results["sources"]["osint_db"] = {
-            "found":       True,
-            "source":      osint_match.source,
-            "severity":    osint_match.severity,
-            "description": osint_match.description,
-            "type":        osint_match.type,
-        }
-        results["tags"].append("In local OSINT DB")
-    else:
-        results["sources"]["osint_db"] = {"found": False}
-
-    # â”€â”€ 2. AbuseIPDB (IPs only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    sources, tags, private = {}, [], False
     if ioc_type == "ip":
-        try:
-            rep_ip = check_ip_reputation(raw, db_session=db)
-            listed = rep_ip["source"] not in (None, "AbuseIPDB")
-            results["sources"]["blocklist"] = (
-                {"found": True, "list": rep_ip["source"], "network": rep_ip["network"], "reference": rep_ip["reference"]}
-                if listed else {"found": False})
+        private = not ipaddress.ip_address(raw).is_global
+        if private:
+            sources["note"] = {"message": "Private or reserved address: reputation services have no data on it"}
+        else:
+            rep = check_ip_reputation(raw, db_session=db)
+            listed = rep["source"] not in (None, "AbuseIPDB")
+            sources["blocklist"] = ({"found": True, "list": rep["source"], "network": rep["network"],
+                                     "reference": rep["reference"]} if listed else {"found": False})
             if listed:
-                results["tags"].append(f"Listed on {rep_ip['source']}")
-            elif "error" in rep_ip:
-                results["sources"]["abuseipdb"] = {"error": rep_ip["error"]}
-            elif rep_ip["source"] == "AbuseIPDB":
-                results["sources"]["abuseipdb"] = {
-                    "score":        rep_ip["score"],
-                    "is_malicious": rep_ip["is_malicious"],
-                    "country":      rep_ip["country"],
-                    "isp":          rep_ip["isp"],
-                    "usage_type":   rep_ip["usage_type"],
-                }
-                if rep_ip["is_malicious"]:
-                    results["tags"].append(f"AbuseIPDB score {rep_ip['score']}/100")
-        except Exception as e:
-            results["sources"]["abuseipdb"] = {"error": str(e)}
-
-    # â”€â”€ 3. VirusTotal (hash or URL) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if ioc_type == "hash":
-        try:
-            vt = check_file_hash(raw)
-            if vt and "error" not in vt:
-                results["sources"]["virustotal"] = vt
-                if vt.get("malicious", 0) > 0:
-                    results["tags"].append(f"VT {vt['malicious']} engines flagged")
-            elif vt:
-                results["sources"]["virustotal"] = vt
-            else:
-                results["sources"]["virustotal"] = {"error": "No response"}
-        except Exception as e:
-            results["sources"]["virustotal"] = {"error": str(e)}
-
-    elif ioc_type == "url":
-        try:
-            vt = check_url_reputation(raw)
-            if vt and "error" not in vt:
-                results["sources"]["virustotal"] = vt
-                if vt.get("malicious", 0) > 0:
-                    results["tags"].append(f"VT flagged as malicious")
-            elif vt:
-                results["sources"]["virustotal"] = vt
-            else:
-                results["sources"]["virustotal"] = {"error": "No response"}
-        except Exception as e:
-            results["sources"]["virustotal"] = {"error": str(e)}
-
-    elif ioc_type == "domain":
-        # Treat domain as a URL for VT lookup
-        try:
-            vt = check_url_reputation(f"http://{raw}")
-            if vt and "error" not in vt:
-                results["sources"]["virustotal"] = vt
-                if vt.get("malicious", 0) > 0:
-                    results["tags"].append("VT flagged domain")
-            elif vt:
-                results["sources"]["virustotal"] = vt
-            else:
-                results["sources"]["virustotal"] = {"error": "No response"}
-        except Exception as e:
-            results["sources"]["virustotal"] = {"error": str(e)}
-
-    # â”€â”€ 4. Compute unified verdict â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    is_malicious = (
-        results["sources"].get("blocklist", {}).get("found") or
-        results["sources"].get("abuseipdb", {}).get("is_malicious") or
-        results["sources"].get("virustotal", {}).get("verdict") == "Malicious" or
-        results["sources"].get("virustotal", {}).get("malicious", 0) > 0
-    )
-    osint_hit = results["sources"].get("osint_db", {}).get("found")
-    abuse_score = results["sources"].get("abuseipdb", {}).get("score", 0)
-
-    if is_malicious and (abuse_score or 0) >= 75:
-        results["verdict"] = "Malicious"
-        results["risk"]    = "critical"
-    elif is_malicious:
-        results["verdict"] = "Malicious"
-        results["risk"]    = "high"
-    elif osint_hit:
-        results["verdict"] = "Suspicious"
-        results["risk"]    = "medium"
-    elif abuse_score and abuse_score > 0:
-        results["verdict"] = "Suspicious"
-        results["risk"]    = "low"
+                tags.append(f"Listed on {rep['source']}")
+            elif "error" in rep:
+                sources["abuseipdb"] = {"error": rep["error"]}
+            elif rep["source"] == "AbuseIPDB":
+                sources["abuseipdb"] = {k: rep[k] for k in ("score", "is_malicious", "country", "isp", "usage_type")}
+                if rep["is_malicious"]:
+                    tags.append(f"AbuseIPDB score {rep['score']}/100")
     else:
-        results["verdict"] = "Clean"
-        results["risk"]    = "none"
+        check = {"hash": check_file_hash, "url": check_url_reputation, "domain": check_domain_reputation}[ioc_type]
+        vt = check(raw)
+        sources["virustotal"] = vt
+        if (vt.get("malicious") or 0) > 0:
+            engines = sum(vt.get(k) or 0 for k in ("malicious", "suspicious", "harmless", "undetected"))
+            tags.append(f"VirusTotal: {vt['malicious']} of {engines} engines flagged it")
 
-    # â”€â”€ 5. Log as OSINT alert if malicious and not already stored â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    if is_malicious and not osint_hit:
-        try:
-            new_alert = models.OSINTAlert(
-                source="IOC Hunter",
-                indicator=raw,
-                type=ioc_type.upper(),
-                description=f"Manual IOC lookup flagged as malicious. Tags: {', '.join(results['tags'])}",
-                severity="High" if results["risk"] == "critical" else "Medium",
-            )
-            db.add(new_alert)
-            db.commit()
-            results["tags"].append("Logged to OSINT DB")
-        except Exception as e:
-            print(f"[IOC] Failed to log alert: {e}")
+    verdict, risk, checked_by = _ioc_verdict(sources, ioc_type, private)
+    saved = db.query(models.OSINTAlert).filter(models.OSINTAlert.source == "IOC Hunter",
+                                               models.OSINTAlert.indicator == raw).first() is not None
+    return {"ioc": raw, "type": ioc_type, "sources": sources, "verdict": verdict, "risk": risk,
+            "checked_by": checked_by, "tags": tags, "saved": saved}
 
-    return results
+
+@app.post("/api/ioc/save")
+def ioc_save(body: schemas.IOCSave, db: Session = Depends(db.get_db)):
+    """Save a malicious lookup as an OSINT alert, only when the analyst asks (feeds the morning brief)."""
+    raw = body.ioc.strip()
+    ioc_type = _detect_ioc_type(raw)
+    if ioc_type == "unknown":
+        raise HTTPException(status_code=422, detail="Not an IP address, file hash, URL or domain")
+    existing = db.query(models.OSINTAlert).filter(models.OSINTAlert.source == "IOC Hunter",
+                                                  models.OSINTAlert.indicator == raw).first()
+    if existing:
+        return {"saved": True, "id": existing.id, "already_saved": True}
+    alert = models.OSINTAlert(source="IOC Hunter", indicator=raw, type=ioc_type.upper(), severity="High",
+                              description=f"Saved by an analyst from IOC Hunter: {body.summary}")
+    db.add(alert)
+    db.commit()
+    return {"saved": True, "id": alert.id, "already_saved": False}

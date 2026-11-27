@@ -1,29 +1,35 @@
 import { useState } from 'react';
-import { Search, Shield, AlertTriangle, CheckCircle, XCircle, Loader, Database, Globe, FileSearch, Hash, Link, Server } from 'lucide-react';
+import { Search, Shield, AlertTriangle, CheckCircle, HelpCircle, Loader, Globe, FileSearch, Hash, Link, Server, Save } from 'lucide-react';
 
 const API = 'http://127.0.0.1:8000';
+const HISTORY_KEY = 'iocHunterHistory';
 
+// Colour and icon by risk; the label is the server's verdict ("Malicious", "Not flagged", "Unknown", ...)
 const RISK_CONFIG = {
-  critical: { color: '#ff2d2d', bg: 'rgba(255,45,45,0.12)',  label: 'CRITICAL',   icon: XCircle },
-  high:     { color: '#ff6b35', bg: 'rgba(255,107,53,0.12)', label: 'HIGH',        icon: AlertTriangle },
-  medium:   { color: '#f5a623', bg: 'rgba(245,166,35,0.12)', label: 'SUSPICIOUS',  icon: AlertTriangle },
-  low:      { color: '#f5a623', bg: 'rgba(245,166,35,0.08)', label: 'LOW RISK',    icon: Shield },
-  none:     { color: '#00ff88', bg: 'rgba(0,255,136,0.08)',  label: 'CLEAN',       icon: CheckCircle },
+  high:    { color: '#ff4444', bg: 'rgba(255,68,68,0.12)',   icon: AlertTriangle },
+  low:     { color: '#f5a623', bg: 'rgba(245,166,35,0.10)',  icon: AlertTriangle },
+  none:    { color: '#48bb78', bg: 'rgba(72,187,120,0.08)',  icon: CheckCircle },
+  unknown: { color: '#8BA3BF', bg: 'rgba(139,163,191,0.08)', icon: HelpCircle },
 };
 
-const TYPE_ICON = {
-  ip:      Server,
-  hash:    Hash,
-  url:     Link,
-  domain:  Globe,
+const TYPE_ICON = { ip: Server, hash: Hash, url: Link, domain: Globe };
+
+// The EICAR file is a harmless, published antivirus test file that every engine flags on purpose
+const EXAMPLE = { label: 'EICAR test file (hash)', value: '44d88612fea8a8f36de82e1278abb02f' };
+
+const loadHistory = () => {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; } catch { return []; }
 };
 
-const EXAMPLES = [
-  { label: 'Suspicious IP',   value: '185.220.101.34' },
-  { label: 'Malware Hash',    value: '44d88612fea8a8f36de82e1278abb02f' },
-  { label: 'Phishing URL',    value: 'http://malware-test.com/payload' },
-  { label: 'Bad Domain',      value: 'evil-c2-domain.ru' },
-];
+const getJson = async (url, options) => {
+  const res = await fetch(url, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = typeof data.detail === 'string' ? data.detail : Array.isArray(data.detail) ? data.detail.map(d => d.msg).join('; ') : null;
+    throw new Error(detail || `Lookup failed (HTTP ${res.status})`);
+  }
+  return data;
+};
 
 function SourceCard({ title, icon: Icon, data, color }) {
   if (!data) return null;
@@ -47,8 +53,8 @@ function SourceCard({ title, icon: Icon, data, color }) {
           </span>
         )}
         {!hasError && data.found === false && (
-          <span style={{ marginLeft: 'auto', fontSize: 11, color: '#00ff88', background: 'rgba(0,255,136,0.08)', padding: '2px 8px', borderRadius: 4 }}>
-            NOT FOUND
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)', background: 'var(--bg-elevated)', padding: '2px 8px', borderRadius: 4 }}>
+            NO RECORD
           </span>
         )}
       </div>
@@ -66,10 +72,8 @@ function SourceCard({ title, icon: Icon, data, color }) {
                 </span>
                 <span style={{
                   fontSize: 12,
-                  color: key === 'is_malicious' ? (val ? '#ff4444' : '#00ff88')
-                       : key === 'verdict'      ? (val === 'Malicious' ? '#ff4444' : '#00ff88')
-                       : key === 'malicious'    ? (val > 0 ? '#ff4444' : '#00ff88')
-                       : key === 'score'        ? (val > 75 ? '#ff4444' : val > 25 ? '#f5a623' : '#00ff88')
+                  color: key === 'is_malicious' ? (val ? '#ff4444' : 'var(--text-primary)')
+                       : key === 'malicious'    ? (val > 0 ? '#ff4444' : 'var(--text-primary)')
                        : 'var(--text-primary)',
                   fontWeight: 500,
                   textAlign: 'right',
@@ -91,7 +95,8 @@ export default function IOCHunter() {
   const [loading, setLoading] = useState(false);
   const [result, setResult]   = useState(null);
   const [error, setError]     = useState(null);
-  const [history, setHistory] = useState([]);
+  const [saveState, setSaveState] = useState(null); // null | 'saving' | error text
+  const [history, setHistory] = useState(loadHistory);
 
   async function lookup(value) {
     const ioc = (value || input).trim();
@@ -100,17 +105,21 @@ export default function IOCHunter() {
     setLoading(true);
     setError(null);
     setResult(null);
+    setSaveState(null);
 
     try {
-      const resp = await fetch(`${API}/api/ioc/lookup`, {
+      const data = await getJson(`${API}/api/ioc/lookup`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ ioc }),
       });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.detail || 'Lookup failed');
       setResult(data);
-      setHistory(prev => [{ ioc, verdict: data.verdict, risk: data.risk, type: data.type }, ...prev].slice(0, 10));
+      setHistory(prev => {
+        const next = [{ ioc, verdict: data.verdict, risk: data.risk, type: data.type },
+                      ...prev.filter(h => h.ioc !== ioc)].slice(0, 10);
+        try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch { /* storage unavailable */ }
+        return next;
+      });
     } catch (e) {
       setError(e.message);
     } finally {
@@ -118,8 +127,24 @@ export default function IOCHunter() {
     }
   }
 
-  const risk    = result ? (RISK_CONFIG[result.risk] || RISK_CONFIG.none) : null;
+  async function saveToOsint() {
+    setSaveState('saving');
+    try {
+      await getJson(`${API}/api/ioc/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ioc: result.ioc, summary: result.tags.join('; ') }),
+      });
+      setResult(r => ({ ...r, saved: true }));
+      setSaveState(null);
+    } catch (e) {
+      setSaveState(`Could not save (${e.message})`);
+    }
+  }
+
+  const risk     = result ? (RISK_CONFIG[result.risk] || RISK_CONFIG.unknown) : null;
   const TypeIcon = result ? (TYPE_ICON[result.type] || Shield) : null;
+  const sources  = result?.sources || {};
 
   return (
     <div style={{ padding: '28px 32px', maxWidth: 960, margin: '0 auto' }}>
@@ -133,7 +158,8 @@ export default function IOCHunter() {
           </h1>
         </div>
         <p style={{ color: 'var(--text-muted)', fontSize: 14, margin: 0 }}>
-          Paste an IP address, file hash (MD5/SHA1/SHA256), URL, or domain — cross-referenced against AbuseIPDB, VirusTotal, and local OSINT intelligence.
+          Paste an IP address (IPv4 or IPv6), file hash (MD5/SHA1/SHA256), URL, or domain. IPs are checked against
+          published blocklists and AbuseIPDB; hashes, URLs and domains against VirusTotal.
         </p>
       </div>
 
@@ -148,7 +174,8 @@ export default function IOCHunter() {
           value={input}
           onChange={e => setInput(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && lookup()}
-          placeholder="185.220.101.34 · 44d88612fea8a8f36de82e1278abb02f · https://evil.com · malware.ru"
+          placeholder="IP address, file hash, URL or domain"
+          aria-label="IP address, file hash, URL or domain"
           style={{
             flex: 1, background: 'none', border: 'none', outline: 'none',
             color: 'var(--text-primary)', fontSize: 14, fontFamily: 'monospace',
@@ -169,27 +196,24 @@ export default function IOCHunter() {
         </button>
       </div>
 
-      {/* Example pills */}
+      {/* Example */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 28 }}>
         <span style={{ fontSize: 12, color: 'var(--text-muted)', alignSelf: 'center' }}>Try:</span>
-        {EXAMPLES.map(ex => (
-          <button
-            key={ex.value}
-            onClick={() => { setInput(ex.value); lookup(ex.value); }}
-            style={{
-              background: 'var(--bg-elevated)', border: '1px solid var(--border)',
-              borderRadius: 6, padding: '4px 12px', fontSize: 12,
-              color: 'var(--text-secondary)', cursor: 'pointer',
-            }}
-          >
-            {ex.label}
-          </button>
-        ))}
+        <button
+          onClick={() => { setInput(EXAMPLE.value); lookup(EXAMPLE.value); }}
+          style={{
+            background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+            borderRadius: 6, padding: '4px 12px', fontSize: 12,
+            color: 'var(--text-secondary)', cursor: 'pointer',
+          }}
+        >
+          {EXAMPLE.label}
+        </button>
       </div>
 
       {/* Error */}
       {error && (
-        <div style={{
+        <div role="alert" style={{
           background: 'rgba(255,45,45,0.08)', border: '1px solid rgba(255,45,45,0.3)',
           borderRadius: 8, padding: '12px 16px', marginBottom: 20,
           color: '#ff6b6b', fontSize: 13,
@@ -207,13 +231,13 @@ export default function IOCHunter() {
             background: risk.bg,
             border: `1px solid ${risk.color}`,
             borderRadius: 12, padding: '20px 24px',
-            display: 'flex', alignItems: 'center', gap: 20,
+            display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap',
           }}>
             <risk.icon size={40} color={risk.color} />
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: 1, minWidth: 200 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
                 <span style={{ fontSize: 22, fontWeight: 800, color: risk.color }}>
-                  {risk.label}
+                  {result.verdict.toUpperCase()}
                 </span>
                 <span style={{
                   background: 'var(--bg-elevated)', border: '1px solid var(--border)',
@@ -227,6 +251,13 @@ export default function IOCHunter() {
               <code style={{ fontSize: 13, color: 'var(--text-primary)', wordBreak: 'break-all' }}>
                 {result.ioc}
               </code>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
+                {result.verdict === 'Not flagged' && `No detections from ${result.checked_by.join(' and ')}.`}
+                {result.verdict === 'Reported' && `Reported on AbuseIPDB below its malicious threshold.`}
+                {result.verdict === 'Unknown' && 'No reputation source had data on it, so it is not known to be safe.'}
+                {result.verdict === 'Not checked' && sources.note?.message}
+                {result.verdict === 'Flagged' && 'VirusTotal reports per-engine detections; weigh how many engines agree.'}
+              </div>
             </div>
             {result.tags?.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-end' }}>
@@ -243,60 +274,76 @@ export default function IOCHunter() {
             )}
           </div>
 
+          {/* Save a malicious finding as an OSINT alert, only when the analyst asks */}
+          {['Malicious', 'Flagged'].includes(result.verdict) && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              {result.saved ? (
+                <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Saved to OSINT alerts.</span>
+              ) : (
+                <button
+                  onClick={saveToOsint}
+                  disabled={saveState === 'saving'}
+                  style={{
+                    background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 6,
+                    padding: '6px 14px', fontSize: 13, color: 'var(--text-primary)', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 6,
+                  }}
+                >
+                  <Save size={14} /> {saveState === 'saving' ? 'Saving...' : 'Save to OSINT alerts'}
+                </button>
+              )}
+              {saveState && saveState !== 'saving' && <span role="alert" style={{ fontSize: 13, color: '#ff6b6b' }}>{saveState}</span>}
+            </div>
+          )}
+
           {/* Source cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
-            <SourceCard
-              title="LOCAL OSINT DB"
-              icon={Database}
-              data={result.sources.osint_db}
-              color={result.sources.osint_db?.found ? '#f5a623' : '#00ff88'}
-            />
-            {result.sources.blocklist && (
+            {sources.blocklist && (
               <SourceCard
-                title="BLOCKLISTS"
+                title="PUBLISHED BLOCKLISTS"
                 icon={Shield}
-                data={result.sources.blocklist}
-                color={result.sources.blocklist?.found ? '#ff4444' : '#00ff88'}
+                data={sources.blocklist}
+                color={sources.blocklist.found ? '#ff4444' : 'var(--border)'}
               />
             )}
-            {result.sources.abuseipdb && (
+            {sources.abuseipdb && (
               <SourceCard
                 title="ABUSEIPDB"
                 icon={Shield}
-                data={result.sources.abuseipdb}
-                color={result.sources.abuseipdb?.is_malicious ? '#ff4444' : '#00ff88'}
+                data={sources.abuseipdb}
+                color={sources.abuseipdb.is_malicious ? '#ff4444' : 'var(--border)'}
               />
             )}
-            {result.sources.virustotal && (
+            {sources.virustotal && (
               <SourceCard
                 title="VIRUSTOTAL"
                 icon={FileSearch}
-                data={result.sources.virustotal}
-                color={result.sources.virustotal?.malicious > 0 ? '#ff4444' : '#00ff88'}
+                data={sources.virustotal}
+                color={sources.virustotal.malicious > 0 ? '#ff4444' : 'var(--border)'}
               />
             )}
           </div>
         </div>
       )}
 
-      {/* History */}
+      {/* History (kept in this browser) */}
       {history.length > 0 && (
         <div style={{ marginTop: 36 }}>
           <h3 style={{ fontSize: 13, color: 'var(--text-muted)', letterSpacing: 1, marginBottom: 12 }}>
             RECENT LOOKUPS
           </h3>
           <div style={{ display: 'grid', gap: 6 }}>
-            {history.map((h, i) => {
-              const hRisk = RISK_CONFIG[h.risk] || RISK_CONFIG.none;
+            {history.map(h => {
+              const hRisk = RISK_CONFIG[h.risk] || RISK_CONFIG.unknown;
               const HTypeIcon = TYPE_ICON[h.type] || Shield;
               return (
-                <div
-                  key={i}
+                <button
+                  key={h.ioc}
                   onClick={() => { setInput(h.ioc); lookup(h.ioc); }}
                   style={{
-                    display: 'flex', alignItems: 'center', gap: 12,
+                    display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left',
                     background: 'var(--bg-card)', border: '1px solid var(--border)',
-                    borderRadius: 8, padding: '10px 14px', cursor: 'pointer',
+                    borderRadius: 8, padding: '10px 14px', cursor: 'pointer', color: 'inherit',
                   }}
                 >
                   <HTypeIcon size={14} color="var(--text-muted)" />
@@ -308,9 +355,9 @@ export default function IOCHunter() {
                     background: hRisk.bg, padding: '2px 10px', borderRadius: 4,
                     flexShrink: 0,
                   }}>
-                    {hRisk.label}
+                    {(h.verdict || '').toUpperCase()}
                   </span>
-                </div>
+                </button>
               );
             })}
           </div>

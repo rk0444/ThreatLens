@@ -54,6 +54,15 @@ class AssetInventory(BaseModel):
     software_versions: dict = Field(default_factory=dict)
 
 
+class IOCLookup(BaseModel):
+    ioc: str = Field(..., max_length=2048)
+
+
+class IOCSave(BaseModel):
+    ioc: str = Field(..., max_length=2048)
+    summary: str = Field("", max_length=500)  # the lookup's findings, e.g. "VirusTotal: 56 engines flagged it"
+
+
 class AssetLocation(BaseModel):
     """Where the user placed an asset; all null clears it."""
     latitude: Optional[float] = Field(None, ge=-90, le=90)
