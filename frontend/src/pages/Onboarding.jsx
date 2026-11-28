@@ -1,388 +1,241 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Shield, Key, Server, Download, CheckCircle, ChevronRight, Check } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { Check, ShieldCheck, Plus, X, Loader2 } from 'lucide-react';
+import { Button, Badge, Input, ErrorState } from '../components/ui';
+import CustomDropdown from '../components/CustomDropdown';
+import { KEY_FIELDS } from '../utils/apiKeys';
+
+const API = 'http://127.0.0.1:8000';
+const STEPS = ['Welcome', 'API keys', 'Endpoints', 'This computer', 'Done'];
+const OS_OPTIONS = ['Windows', 'macOS', 'Linux'].map(v => ({ value: v, label: v }));
+const COMMON_SOFTWARE = ['Apache', 'Nginx', 'MySQL', 'PostgreSQL', 'Node.js', 'Python', 'Docker', 'OpenSSL'];
+const EMPTY_ASSET = { hostname: '', os: 'Windows', ip_address: '', software_list: [] };
+
+const postJson = async (url, body) => {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Request failed (${res.status})`);
+  return data;
+};
+
+const formatSeen = (iso) => (iso ? new Date(iso).toLocaleString() : 'never');
 
 const Onboarding = () => {
   const navigate = useNavigate();
-  const [step, setStep] = useState(1);
-  const [keys, setKeys] = useState({
-    NVD_API_KEY: '',
-    OTX_API_KEY: '',
-    ABUSEIPDB_API_KEY: '',
-    VIRUSTOTAL_API_KEY: '',
-    GPT4O_API_KEY: ''
-  });
-  
-  const [asset, setAsset] = useState({
-    hostname: '',
-    os: 'Windows',
-    ip_address: '',
-    software_list: []
-  });
+  const desktop = Boolean(window.electronAPI);
+  const [step, setStep] = useState(0);
+  const [keys, setKeys] = useState(Object.fromEntries(KEY_FIELDS.map(f => [f.name, ''])));
+  const [keysSaved, setKeysSaved] = useState(0);
+  const [asset, setAsset] = useState(EMPTY_ASSET);
   const [softwareInput, setSoftwareInput] = useState('');
-  const [agentStatus, setAgentStatus] = useState('waiting'); // waiting, connected
-  
-  // Step 1: Welcome
-  // Step 2: API Keys
-  // Step 3: Register Assets
-  // Step 4: Install Agent
-  // Step 5: Ready
-  
-  const handleNext = () => {
-    if (step < 5) setStep(step + 1);
-  };
-  
-  const handleSaveKeys = async () => {
-    try {
-      if (window.electronAPI) {
-        await window.electronAPI.writeEnv(keys);
-      }
-      handleNext();
-    } catch (e) {
-      console.error(e);
-      alert('Failed to save keys.');
-    }
-  };
-  
-  const handleSaveAsset = async () => {
-    try {
-      if (!asset.hostname || !asset.ip_address) {
-        alert('Hostname and IP Address are required.');
-        return;
-      }
-      await fetch('http://127.0.0.1:8000/api/assets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: asset.hostname,
-          os: asset.os,
-          ip_address: asset.ip_address,
-          software_list: asset.software_list,
-          status: 'Online'
-        })
-      });
-      handleNext();
-    } catch (e) {
-      console.error(e);
-      alert('Failed to save asset.');
-    }
-  };
-  
+  const [registered, setRegistered] = useState([]); // names registered in this session
+  const [busy, setBusy] = useState(false);
+  const [formError, setFormError] = useState(null);
+  const [assets, setAssets] = useState(null);
+  const [assetsError, setAssetsError] = useState(null);
+
+  const next = () => { setFormError(null); setStep(s => Math.min(s + 1, STEPS.length - 1)); };
+  const back = () => { setFormError(null); setStep(s => Math.max(s - 1, 0)); };
+
+  // The network monitor on this computer registers it by hostname and marks it online with its heartbeat
   useEffect(() => {
-    let interval;
-    if (step === 4) {
-      interval = setInterval(async () => {
-        try {
-          const res = await fetch('http://127.0.0.1:8000/api/assets');
-          const data = await res.json();
-          // If we see more assets, or just simulate for now
-          if (data && data.length > 0) {
-            // For the sake of the demo, assume agent connected if assets exist
-            setAgentStatus('connected');
-          }
-        } catch (e) {}
-      }, 3000);
-    }
-    return () => clearInterval(interval);
+    if (step < 3) return;
+    let alive = true;
+    const load = () => fetch(`${API}/api/assets`)
+      .then(r => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then(list => { if (alive) { setAssets(list); setAssetsError(null); } })
+      .catch(e => { if (alive) setAssetsError(e.message); });
+    load();
+    const t = setInterval(load, 3000);
+    return () => { alive = false; clearInterval(t); };
   }, [step]);
-  
-  const renderStepIndicator = () => (
-    <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', marginBottom: '2rem' }}>
-      {[1, 2, 3, 4, 5].map(i => (
-        <div key={i} style={{
-          width: '12px', height: '12px', borderRadius: '50%',
-          background: step >= i ? 'var(--accent-gold)' : 'var(--border)',
-          transition: 'background 0.3s'
-        }}></div>
-      ))}
-    </div>
-  );
+
+  const saveKeys = async () => {
+    const filled = Object.fromEntries(Object.entries(keys).filter(([, v]) => v.trim()));
+    if (Object.keys(filled).length === 0) { next(); return; }
+    setBusy(true);
+    try {
+      await window.electronAPI.writeEnv(filled);
+      setKeysSaved(Object.keys(filled).length);
+      next();
+    } catch (e) {
+      setFormError(`Could not save the keys (${e.message}).`);
+    }
+    setBusy(false);
+  };
+
+  const addSoftware = (name) => {
+    const sw = name.trim();
+    if (sw && !asset.software_list.includes(sw)) setAsset(a => ({ ...a, software_list: [...a.software_list, sw] }));
+  };
+
+  // andContinue: false keeps the form open (cleared) to register another endpoint
+  const saveAsset = async (andContinue) => {
+    if (!asset.hostname.trim() || !asset.ip_address.trim()) { setFormError('Hostname and IP address are required.'); return; }
+    setBusy(true);
+    setFormError(null);
+    try {
+      await postJson(`${API}/api/assets`, {
+        name: asset.hostname.trim(), os: asset.os, ip_address: asset.ip_address.trim(), software_list: asset.software_list,
+      });
+      setRegistered(r => [...r, asset.hostname.trim()]);
+      setAsset(EMPTY_ASSET);
+      setSoftwareInput('');
+      if (andContinue) next();
+    } catch (e) {
+      setFormError(`Could not register the endpoint (${e.message}).`);
+    }
+    setBusy(false);
+  };
+
+  const online = (assets || []).filter(a => a.online);
 
   return (
-    <div className="page-container" style={{ textAlign: 'center', position: 'relative' }}>
-      
-      {/* Waveform Background for Step 1 */}
-      {step === 1 && (
-        <div style={{
-          position: 'absolute', top: '-10%', left: '-10%', right: '-10%', bottom: '-10%',
-          zIndex: -1, opacity: 0.1, pointerEvents: 'none'
-        }}>
-          <svg width="100%" height="100%" xmlns="http://www.w3.org/2000/svg">
-            <path d="M0,200 Q150,100 300,200 T600,200 T900,200 T1200,200" fill="none" stroke="var(--accent-gold)" strokeWidth="2">
-              <animate attributeName="d" dur="10s" repeatCount="indefinite"
-                values="M0,200 Q150,100 300,200 T600,200 T900,200 T1200,200;
-                        M0,200 Q150,300 300,200 T600,200 T900,200 T1200,200;
-                        M0,200 Q150,100 300,200 T600,200 T900,200 T1200,200" />
-            </path>
-            <path d="M0,250 Q150,350 300,250 T600,250 T900,250 T1200,250" fill="none" stroke="var(--accent-gold)" strokeWidth="1">
-              <animate attributeName="d" dur="15s" repeatCount="indefinite"
-                values="M0,250 Q150,350 300,250 T600,250 T900,250 T1200,250;
-                        M0,250 Q150,150 300,250 T600,250 T900,250 T1200,250;
-                        M0,250 Q150,350 300,250 T600,250 T900,250 T1200,250" />
-            </path>
-          </svg>
-        </div>
-      )}
+    <div className="onboarding">
+      <nav className="onboarding-steps" aria-label="Setup steps">
+        <div className="brand-inline"><ShieldCheck size={18} aria-hidden="true" /> ThreatLens setup</div>
+        <ol>
+          {STEPS.map((name, i) => (
+            <li key={name} className={i === step ? 'current' : i < step ? 'done' : undefined} aria-current={i === step ? 'step' : undefined}>
+              <span className="step-mark" aria-hidden="true">{i < step ? <Check size={12} /> : i + 1}</span>
+              {name}
+            </li>
+          ))}
+        </ol>
+      </nav>
 
-      {renderStepIndicator()}
+      <section className="onboarding-body" aria-labelledby="step-title">
+        <div className="small muted">Step {step + 1} of {STEPS.length}</div>
 
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={step}
-          initial={{ opacity: 0, x: 20 }}
-          animate={{ opacity: 1, x: 0 }}
-          exit={{ opacity: 0, x: -20 }}
-          transition={{ duration: 0.3 }}
-        >
-          {step === 1 && (
-            <div style={{ padding: '2rem' }}>
-              <Shield size={64} color="var(--accent-gold)" style={{ marginBottom: '1rem' }} />
-              <h1 style={{ fontSize: '3rem', marginBottom: '1rem' }}>Welcome to <span className="italic-serif" style={{color: 'var(--accent-gold)'}}>ThreatLens</span></h1>
-              <p style={{ fontSize: '1.2rem', color: 'var(--text-secondary)', marginBottom: '3rem' }}>
-                Your unified security command centre.
-              </p>
-              <button className="gold-button" onClick={handleNext} style={{ fontSize: '1.1rem', padding: '12px 32px' }}>
-                Get Started
-              </button>
+        {step === 0 && (<>
+          <h1 id="step-title">Set up ThreatLens</h1>
+          <p>ThreatLens collects published vulnerabilities (NVD, EPSS, CISA KEV) and threat intelligence (AlienVault OTX, MITRE ATT&CK), scores them for your endpoints, and watches this computer's network connections and processes.</p>
+          <p className="muted">Setup takes a few minutes. Every step can be skipped and changed later in Settings or Endpoints.</p>
+          <div className="onboarding-actions"><span /><Button variant="primary" onClick={next}>Start setup</Button></div>
+        </>)}
+
+        {step === 1 && (<>
+          <h1 id="step-title">API keys</h1>
+          <p className="muted">All keys are optional. Without one, that source shows as unavailable. Keys are stored in ThreatLens's local .env file and apply after a restart.</p>
+          {!desktop ? (
+            <p className="muted">Keys can only be entered in the ThreatLens desktop app.</p>
+          ) : (
+            <div className="onboarding-fields">
+              {KEY_FIELDS.map(f => (
+                <Input key={f.name} label={f.label} hint={f.hint} type="password" autoComplete="off" spellCheck={false}
+                  value={keys[f.name]} onChange={e => setKeys(k => ({ ...k, [f.name]: e.target.value }))} />
+              ))}
             </div>
           )}
+          {formError && <ErrorState title="Not saved">{formError}</ErrorState>}
+          <div className="onboarding-actions">
+            <Button variant="ghost" onClick={back}>Back</Button>
+            <div style={{ display: 'flex', gap: 'var(--s2)' }}>
+              <Button onClick={next}>Skip</Button>
+              {desktop && <Button variant="primary" onClick={saveKeys} disabled={busy}>Save and continue</Button>}
+            </div>
+          </div>
+        </>)}
 
-          {step === 2 && (
-            <div style={{ textAlign: 'left', maxWidth: '500px', margin: '0 auto' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
-                <Key size={24} color="var(--accent-gold)" />
-                <h2>API Integrations</h2>
-              </div>
-              <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                Configure your OSINT and AI providers. Keys are stored locally in your <code>.env</code> file.
-              </p>
-              
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '2rem' }}>
-                {[
-                  { id: 'NVD_API_KEY', label: 'NVD API Key', desc: 'Increases rate limit from 5 to 50 req/30s' },
-                  { id: 'OTX_API_KEY', label: 'AlienVault OTX API Key', desc: 'Required for global threat intelligence' },
-                  { id: 'ABUSEIPDB_API_KEY', label: 'AbuseIPDB API Key', desc: 'Required for IP reputation checking' },
-                  { id: 'VIRUSTOTAL_API_KEY', label: 'VirusTotal API Key', desc: 'Required for file hash lookup' },
-                  { id: 'GPT4O_API_KEY', label: 'GPT-4o API Key', desc: 'Required for AI Copilot and the morning brief' }
-                ].map(input => (
-                  <div key={input.id}>
-                    <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.9rem', color: 'var(--text-primary)' }}>
-                      {input.label} {keys[input.id] && <Check size={14} color="var(--success)" style={{ marginLeft: '4px', verticalAlign: 'middle' }}/>}
-                    </label>
-                    <input
-                      type="password"
-                      value={keys[input.id]}
-                      onChange={(e) => setKeys({...keys, [input.id]: e.target.value})}
-                      placeholder="Enter API Key"
-                      style={{
-                        width: '100%', padding: '10px', borderRadius: '4px',
-                        background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)',
-                        color: 'var(--text-primary)', marginBottom: '4px'
-                      }}
-                    />
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{input.desc}</div>
-                  </div>
+        {step === 2 && (<>
+          <h1 id="step-title">Register endpoints</h1>
+          <p className="muted">
+            This computer registers itself when its monitor starts (next step). Add other machines here so their software is matched against CVEs, or skip and add them later on the Endpoints page.
+          </p>
+          {registered.length > 0 && (
+            <div className="small">Registered: {registered.map(n => <Badge key={n} tone="ok">{n}</Badge>)}</div>
+          )}
+          <div className="onboarding-fields">
+            <Input label="Hostname" value={asset.hostname} placeholder="e.g. SRV-PROD-01" autoComplete="off"
+              onChange={e => setAsset(a => ({ ...a, hostname: e.target.value }))} />
+            <div className="field">
+              <CustomDropdown label="Operating system" options={OS_OPTIONS} value={asset.os} onChange={v => setAsset(a => ({ ...a, os: v }))} />
+            </div>
+            <Input label="IP address" value={asset.ip_address} placeholder="e.g. 192.168.1.100" autoComplete="off" className="mono-input"
+              onChange={e => setAsset(a => ({ ...a, ip_address: e.target.value }))} />
+            <div className="field">
+              <Input label="Installed software" value={softwareInput} placeholder="Type a name and press Enter"
+                hint="Names are matched against the products NVD lists for each CVE."
+                onChange={e => setSoftwareInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addSoftware(softwareInput); setSoftwareInput(''); } }} />
+              {asset.software_list.length > 0 && (
+                <ul className="tag-list" aria-label="Software added">
+                  {asset.software_list.map(sw => (
+                    <li key={sw} className="badge">
+                      {sw}
+                      <button type="button" className="tag-remove" aria-label={`Remove ${sw}`}
+                        onClick={() => setAsset(a => ({ ...a, software_list: a.software_list.filter(s => s !== sw) }))}><X size={12} /></button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="tag-suggestions">
+                <span className="small muted">Common:</span>
+                {COMMON_SOFTWARE.filter(sw => !asset.software_list.includes(sw)).map(sw => (
+                  <Button key={sw} size="sm" variant="ghost" icon={Plus} onClick={() => addSoftware(sw)}>{sw}</Button>
                 ))}
               </div>
-              
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem' }}>
-                <button 
-                  onClick={handleNext} 
-                  style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '8px 16px', borderRadius: '4px', cursor: 'pointer' }}
-                >
-                  Skip for now
-                </button>
-                <button className="gold-button" onClick={handleSaveKeys}>
-                  Save & Continue
-                </button>
-              </div>
             </div>
-          )}
-
-          {step === 3 && (
-            <div style={{ textAlign: 'left', maxWidth: '500px', margin: '0 auto' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
-                <Server size={24} color="var(--accent-gold)" />
-                <h2>Register Your Assets</h2>
-              </div>
-              <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                Add your first machine to begin monitoring for vulnerabilities and incidents.
-              </p>
-              
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '2rem' }}>
-                <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.9rem' }}>Hostname</label>
-                  <input
-                    type="text"
-                    value={asset.hostname}
-                    onChange={(e) => setAsset({...asset, hostname: e.target.value})}
-                    placeholder="e.g. SRV-PROD-01"
-                    style={{ width: '100%', padding: '10px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                  />
-                </div>
-                
-                <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.9rem' }}>Operating System</label>
-                  <select
-                    value={asset.os}
-                    onChange={(e) => setAsset({...asset, os: e.target.value})}
-                    style={{ width: '100%', padding: '10px', borderRadius: '4px', background: 'var(--bg-secondary)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                  >
-                    <option value="Windows">Windows</option>
-                    <option value="macOS">macOS</option>
-                    <option value="Linux">Linux</option>
-                  </select>
-                </div>
-                
-                <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.9rem' }}>IP Address</label>
-                  <input
-                    type="text"
-                    value={asset.ip_address}
-                    onChange={(e) => setAsset({...asset, ip_address: e.target.value})}
-                    placeholder="192.168.1.100"
-                    style={{ width: '100%', padding: '10px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                  />
-                </div>
-
-                <div>
-                  <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.9rem' }}>Software Stack</label>
-                  <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
-                    {asset.software_list.map(sw => (
-                      <span key={sw} style={{ background: 'rgba(184, 146, 42, 0.2)', color: 'var(--accent-gold)', padding: '2px 8px', borderRadius: '12px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                        {sw}
-                        <button style={{ background: 'none', border: 'none', color: 'var(--text-primary)', cursor: 'pointer' }} onClick={() => setAsset({...asset, software_list: asset.software_list.filter(s => s !== sw)})}>&times;</button>
-                      </span>
-                    ))}
-                  </div>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <input
-                      type="text"
-                      value={softwareInput}
-                      onChange={(e) => setSoftwareInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && softwareInput.trim()) {
-                          if (!asset.software_list.includes(softwareInput.trim())) {
-                            setAsset({...asset, software_list: [...asset.software_list, softwareInput.trim()]});
-                          }
-                          setSoftwareInput('');
-                        }
-                      }}
-                      placeholder="Add software and press Enter (e.g. Node.js, PostgreSQL)"
-                      style={{ flex: 1, padding: '10px', borderRadius: '4px', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', color: 'var(--text-primary)' }}
-                    />
-                  </div>
-                  <div style={{ marginTop: '8px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    {['Apache', 'Nginx', 'MySQL', 'PostgreSQL', 'Node.js', 'Python', 'Docker', 'OpenSSL'].map(sw => (
-                      <button
-                        key={sw}
-                        onClick={() => {
-                          if (!asset.software_list.includes(sw)) {
-                            setAsset({...asset, software_list: [...asset.software_list, sw]});
-                          }
-                        }}
-                        style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-secondary)', padding: '2px 8px', borderRadius: '4px', fontSize: '0.75rem', cursor: 'pointer' }}
-                      >
-                        + {sw}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <button onClick={() => { /* clear form to add another */ }} style={{ background: 'none', border: 'none', color: 'var(--info)', cursor: 'pointer', fontSize: '0.9rem' }}>
-                  + Add Another Asset
-                </button>
-                <button className="gold-button" onClick={handleSaveAsset}>
-                  Save Asset
-                </button>
-              </div>
+          </div>
+          {formError && <ErrorState title="Not registered">{formError}</ErrorState>}
+          <div className="onboarding-actions">
+            <Button variant="ghost" onClick={back}>Back</Button>
+            <div style={{ display: 'flex', gap: 'var(--s2)', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <Button onClick={next}>{registered.length ? 'Continue' : 'Skip'}</Button>
+              <Button onClick={() => saveAsset(false)} disabled={busy}>Register and add another</Button>
+              <Button variant="primary" onClick={() => saveAsset(true)} disabled={busy}>Register and continue</Button>
             </div>
-          )}
+          </div>
+        </>)}
 
-          {step === 4 && (
-            <div style={{ textAlign: 'left', maxWidth: '500px', margin: '0 auto' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem' }}>
-                <Download size={24} color="var(--accent-gold)" />
-                <h2>Install Endpoint Agent</h2>
+        {step === 3 && (<>
+          <h1 id="step-title">This computer</h1>
+          <p className="muted">
+            ThreatLens starts a network monitor and a process monitor on this computer. The network monitor registers the computer by its hostname and checks in every 10 seconds; that check-in is what marks it online.
+          </p>
+          <div className="callout" role="status" aria-live="polite">
+            {assetsError ? (
+              <div><div className="callout-title">Backend unreachable</div><div className="callout-text">{assetsError}. Retrying every 3 seconds.</div></div>
+            ) : assets == null ? (
+              <div className="callout-text" style={{ display: 'flex', gap: 'var(--s2)', alignItems: 'center' }}><Loader2 size={14} className="spin" aria-hidden="true" /> Checking…</div>
+            ) : online.length > 0 ? (
+              <div>
+                <div className="callout-title">Monitor checking in</div>
+                <div className="callout-text">{online.map(a => `${a.name} (last check-in ${formatSeen(a.last_seen)})`).join(', ')}</div>
               </div>
-              <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-                Deploy the ThreatLens agent to {asset.hostname || 'your machine'} to enable active monitoring and response.
-              </p>
-
-              <div style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden', marginBottom: '2rem' }}>
-                <div style={{ display: 'flex', borderBottom: '1px solid var(--border)' }}>
-                  {['Windows', 'macOS', 'Linux'].map(os => (
-                    <div key={os} style={{ flex: 1, padding: '10px', textAlign: 'center', cursor: 'pointer', background: asset.os === os ? 'rgba(184, 146, 42, 0.1)' : 'transparent', color: asset.os === os ? 'var(--accent-gold)' : 'var(--text-secondary)', borderBottom: asset.os === os ? '2px solid var(--accent-gold)' : 'none' }}>
-                      {os}
-                    </div>
-                  ))}
-                </div>
-                <div style={{ padding: '1.5rem' }}>
-                  <p style={{ marginBottom: '1rem', fontSize: '0.9rem' }}>Run the following command in your terminal:</p>
-                  <div style={{ background: '#000', padding: '1rem', borderRadius: '4px', fontFamily: 'monospace', color: '#0f0', marginBottom: '1rem', position: 'relative' }}>
-                    {asset.os === 'Windows' && 'Invoke-WebRequest -Uri "http://127.0.0.1:8000/agent/win" -OutFile threatlens-agent.exe\n.\\threatlens-agent.exe --register'}
-                    {asset.os === 'macOS' && 'curl -sSL http://127.0.0.1:8000/agent/mac | sudo bash'}
-                    {asset.os === 'Linux' && 'curl -sSL http://127.0.0.1:8000/agent/linux | sudo bash'}
-                  </div>
-                  
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '12px', background: 'rgba(255,255,255,0.02)', borderRadius: '4px' }}>
-                    {agentStatus === 'waiting' ? (
-                      <>
-                        <div className="spin" style={{ width: '16px', height: '16px', border: '2px solid var(--text-muted)', borderTopColor: 'var(--accent-gold)', borderRadius: '50%' }}></div>
-                        <span style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>Waiting for agent to check in...</span>
-                      </>
-                    ) : (
-                      <>
-                        <CheckCircle size={16} color="var(--success)" />
-                        <span style={{ fontSize: '0.9rem', color: 'var(--success)' }}>Agent connected successfully!</span>
-                      </>
-                    )}
-                  </div>
+            ) : (
+              <div>
+                <div className="callout-title">Waiting for the monitor to check in</div>
+                <div className="callout-text">
+                  The installed app starts it automatically. When running from source, <code>npm run dev</code> starts it, or run <code>npm run monitor:dev</code> on its own.
                 </div>
               </div>
+            )}
+          </div>
+          <div className="onboarding-actions">
+            <Button variant="ghost" onClick={back}>Back</Button>
+            <Button variant="primary" onClick={next}>{online.length ? 'Continue' : 'Continue without it'}</Button>
+          </div>
+        </>)}
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem' }}>
-                <button onClick={handleNext} style={{ background: 'transparent', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '8px 16px', borderRadius: '4px', cursor: 'pointer' }}>
-                  Skip for now
-                </button>
-                <button className="gold-button" onClick={handleNext} disabled={agentStatus === 'waiting'}>
-                  Continue
-                </button>
-              </div>
-            </div>
-          )}
-
-          {step === 5 && (
-            <div style={{ padding: '2rem' }}>
-              <motion.div
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                transition={{ type: 'spring', damping: 10, stiffness: 100, delay: 0.2 }}
-                style={{ marginBottom: '2rem' }}
-              >
-                <CheckCircle size={80} color="var(--success)" style={{ margin: '0 auto' }} />
-              </motion.div>
-              <h1 style={{ fontSize: '2.5rem', marginBottom: '1rem' }}>You're <span className="italic-serif" style={{color: 'var(--accent-gold)'}}>Ready</span></h1>
-              <p style={{ fontSize: '1.1rem', color: 'var(--text-secondary)', marginBottom: '2rem', maxWidth: '400px', margin: '0 auto 3rem auto' }}>
-                ThreatLens is fully configured and actively monitoring your environment.
-              </p>
-              
-              <div style={{ display: 'inline-flex', flexDirection: 'column', gap: '1rem', textAlign: 'left', marginBottom: '3rem', background: 'rgba(255,255,255,0.02)', padding: '1.5rem', borderRadius: '8px', border: '1px solid var(--border)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Check size={16} color="var(--success)"/> API integrations saved</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Check size={16} color="var(--success)"/> Initial assets registered</div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}><Check size={16} color="var(--success)"/> Background synchronisation started</div>
-              </div>
-              <br/>
-              <button className="gold-button" onClick={() => navigate('/')} style={{ fontSize: '1.1rem', padding: '12px 32px', display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
-                Open Dashboard <ChevronRight size={20} />
-              </button>
-            </div>
-          )}
-        </motion.div>
-      </AnimatePresence>
+        {step === 4 && (<>
+          <h1 id="step-title">Setup summary</h1>
+          <ul className="summary-list">
+            <li>
+              <span>API keys</span>
+              <span>{keysSaved ? `${keysSaved} saved; restart ThreatLens to apply them` : desktop ? 'None entered' : 'Not available outside the desktop app'}</span>
+            </li>
+            <li><span>Endpoints registered in setup</span><span>{registered.length ? registered.join(', ') : 'None'}</span></li>
+            <li><span>Endpoints known to ThreatLens</span><span>{assets ? assets.length : '–'}</span></li>
+            <li><span>Monitor on this computer</span><span>{online.length ? 'Checking in' : 'Not checking in yet'}</span></li>
+          </ul>
+          <p className="muted">Data syncs run in the background: NVD every 15 minutes, OSINT every 30 minutes, CISA KEV every 6 hours.</p>
+          <div className="onboarding-actions">
+            <Button variant="ghost" onClick={back}>Back</Button>
+            <Button variant="primary" onClick={() => navigate('/')}>Open Overview</Button>
+          </div>
+        </>)}
+      </section>
     </div>
   );
 };

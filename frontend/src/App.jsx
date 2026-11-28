@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { HashRouter as Router, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
-import { AnimatePresence, motion } from 'framer-motion';
-import { Brain, AlertOctagon, X } from 'lucide-react';
+import { Sparkles, X } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
+import { Badge, Button, Modal } from './components/ui';
 
 // Pages
 import Overview from './pages/Overview';
@@ -16,18 +16,6 @@ import Onboarding from './pages/Onboarding';
 import AICopilot from './pages/AICopilot';
 import AttackMap from './pages/AttackMap';
 import IOCHunter from './pages/IOCHunter';
-
-const PageWrapper = ({ children }) => (
-  <motion.div
-    initial={{ opacity: 0 }}
-    animate={{ opacity: 1 }}
-    exit={{ opacity: 0 }}
-    transition={{ duration: 0.2 }}
-    style={{ width: '100%', height: '100%' }}
-  >
-    {children}
-  </motion.div>
-);
 
 function AppLayout() {
   const location = useLocation();
@@ -99,7 +87,7 @@ function AppLayout() {
           // Auto dismiss after 5s
           setTimeout(() => setCriticalAlert(null), 5000);
         }
-      } catch (e) {}
+      } catch { /* ignore malformed messages */ }
     };
     return () => { if (wsRef.current) wsRef.current.close(); };
   }, []);
@@ -108,94 +96,58 @@ function AppLayout() {
 
   return (
     <div className={isOnboarding ? "onboarding-layout" : "app-container"}>
+      <a href="#main" className="skip-link" onClick={e => { e.preventDefault(); document.getElementById('main')?.focus(); }}>Skip to content</a>
       {!isOnboarding && <Sidebar />}
       <div className={isOnboarding ? "onboarding-wrapper" : "main-wrapper"}>
         {!isOnboarding && <TopBar />}
-        <main className={isOnboarding ? "onboarding-content" : location.pathname === '/attackmap' ? "content content-full" : "content"}>
-          <AnimatePresence mode="wait">
-            <Routes location={location} key={location.pathname}>
-              <Route path="/" element={<PageWrapper><Overview /></PageWrapper>} />
-              <Route path="/global" element={<PageWrapper><GlobalThreats /></PageWrapper>} />
-              <Route path="/actors" element={<PageWrapper><ThreatActors /></PageWrapper>} />
-              <Route path="/endpoints" element={<PageWrapper><Endpoints /></PageWrapper>} />
-              <Route path="/incidents" element={<PageWrapper><Incidents /></PageWrapper>} />
-              <Route path="/settings" element={<PageWrapper><Settings /></PageWrapper>} />
-              <Route path="/onboarding" element={<PageWrapper><Onboarding /></PageWrapper>} />
-              <Route path="/copilot" element={<PageWrapper><AICopilot /></PageWrapper>} />
-              <Route path="/attackmap" element={<PageWrapper><AttackMap /></PageWrapper>} />
-              <Route path="/ioc" element={<PageWrapper><IOCHunter /></PageWrapper>} />
-            </Routes>
-          </AnimatePresence>
+        <main id="main" tabIndex={-1} className={isOnboarding ? "onboarding-content" : location.pathname === '/attackmap' ? "content content-full" : "content"}>
+          <Routes location={location}>
+              <Route path="/" element={<Overview />} />
+              <Route path="/global" element={<GlobalThreats />} />
+              <Route path="/actors" element={<ThreatActors />} />
+              <Route path="/endpoints" element={<Endpoints />} />
+              <Route path="/incidents" element={<Incidents />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/onboarding" element={<Onboarding />} />
+              <Route path="/copilot" element={<AICopilot />} />
+              <Route path="/attackmap" element={<AttackMap />} />
+              <Route path="/ioc" element={<IOCHunter />} />
+          </Routes>
         </main>
       </div>
 
-      {/* Morning Brief Toast */}
-      <AnimatePresence>
-        {toast && (
-          <motion.div
-            initial={{ opacity: 0, y: 50, x: '100%' }}
-            animate={{ opacity: 1, y: 0, x: 0 }}
-            exit={{ opacity: 0, y: 50, x: '100%' }}
-            style={{
-              position: 'fixed', bottom: '2rem', right: '2rem', zIndex: 9999,
-              background: 'var(--bg-surface)', border: '1px solid var(--accent-gold)', borderRadius: '8px',
-              padding: '1rem', display: 'flex', alignItems: 'center', gap: '1rem', boxShadow: '0 10px 25px rgba(0,0,0,0.5)'
-            }}
-          >
-            <Brain size={24} color="var(--accent-gold)" />
-            <div>
-              <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>{toast.title}</div>
-              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{toast.message}</div>
-            </div>
-            <button onClick={() => setToast(null)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', marginLeft: '1rem' }}>
-              <X size={16} />
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Morning Brief toast */}
+      {toast && (
+        <div className="toast" role="status">
+          <Sparkles size={16} aria-hidden="true" />
+          <div>
+            <div className="toast-title">{toast.title}</div>
+            <div className="toast-text">{toast.message}</div>
+          </div>
+          <Button variant="ghost" size="sm" icon={X} iconOnly onClick={() => setToast(null)}>Dismiss</Button>
+        </div>
+      )}
 
-      {/* Critical Overlay */}
-      <AnimatePresence>
+      {/* Critical incident alert */}
+      <Modal
+        open={!!criticalAlert}
+        onClose={() => setCriticalAlert(null)}
+        className="modal-critical"
+        title={<span style={{ display: 'flex', alignItems: 'center', gap: 8 }}><Badge severity="critical" /> New incident</span>}
+        footer={<>
+          <Button onClick={() => setCriticalAlert(null)}>Dismiss</Button>
+          <Button variant="primary" onClick={() => { setCriticalAlert(null); navigate('/incidents'); }}>View incident</Button>
+        </>}
+      >
         {criticalAlert && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            style={{
-              position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 10000,
-              background: 'rgba(229, 62, 62, 0.95)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              backdropFilter: 'blur(10px)'
-            }}
-          >
-            <div style={{ textAlign: 'center', color: '#fff', maxWidth: '600px' }}>
-              <AlertOctagon size={120} color="#fff" style={{ margin: '0 auto 2rem' }} />
-              <h1 style={{ fontSize: '4rem', marginBottom: '1rem', fontFamily: 'DM Serif Display', fontWeight: 'bold' }}>CRITICAL ALERT</h1>
-              <p style={{ fontSize: '1.5rem', marginBottom: '3rem' }}>Incident #{criticalAlert.id}: {criticalAlert.type} on {criticalAlert.machine_hostname}</p>
-              <button 
-                onClick={() => {
-                  setCriticalAlert(null);
-                  navigate('/incidents');
-                }}
-                style={{
-                  background: '#fff', color: '#E53E3E', border: 'none', padding: '16px 32px',
-                  borderRadius: '8px', fontSize: '1.25rem', fontWeight: 'bold', cursor: 'pointer'
-                }}
-              >
-                View Incident Details
-              </button>
-              <button
-                onClick={() => setCriticalAlert(null)}
-                style={{
-                  display: 'block', margin: '2rem auto 0', background: 'transparent', border: 'none',
-                  color: 'rgba(255,255,255,0.7)', cursor: 'pointer', fontSize: '1rem'
-                }}
-              >
-                Dismiss (Auto-dismissing in 5s)
-              </button>
-            </div>
-          </motion.div>
+          <>
+            <p>
+              <span className="mono">#{criticalAlert.id}</span> {criticalAlert.type} on <span className="mono">{criticalAlert.machine_hostname}</span>
+            </p>
+            <p style={{ color: 'var(--text-3)', marginTop: 'var(--s2)', fontSize: 'var(--fs-sm)' }}>This alert closes by itself after 5 seconds.</p>
+          </>
         )}
-      </AnimatePresence>
+      </Modal>
     </div>
   );
 }

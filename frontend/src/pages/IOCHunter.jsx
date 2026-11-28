@@ -1,21 +1,23 @@
 import { useState, useRef } from 'react';
-import { Search, Shield, AlertTriangle, CheckCircle, HelpCircle, Loader, Globe, FileSearch, Hash, Link, Server, Save } from 'lucide-react';
+import { Search, Save, Loader2, Server, Hash, Link, Globe, Shield } from 'lucide-react';
+import { PageHeader, Button, Badge, Card, Table, Input, ErrorState, EmptyState, Skeleton } from '../components/ui';
 
 const API = 'http://127.0.0.1:8000';
 const HISTORY_KEY = 'iocHunterHistory';
 
-// Colour and icon by risk; the label is the server's verdict ("Malicious", "Not flagged", "Unknown", ...)
-const RISK_CONFIG = {
-  high:    { color: '#ff4444', bg: 'rgba(255,68,68,0.12)',   icon: AlertTriangle },
-  low:     { color: '#f5a623', bg: 'rgba(245,166,35,0.10)',  icon: AlertTriangle },
-  none:    { color: '#48bb78', bg: 'rgba(72,187,120,0.08)',  icon: CheckCircle },
-  unknown: { color: '#8BA3BF', bg: 'rgba(139,163,191,0.08)', icon: HelpCircle },
+// The server's risk picks the badge; its verdict ("Malicious", "Not flagged", "Unknown", ...) is the label
+const verdictBadge = (risk, verdict) => {
+  if (risk === 'high') return <Badge severity="high">{verdict}</Badge>;
+  if (risk === 'low') return <Badge severity="medium">{verdict}</Badge>;
+  if (risk === 'none') return <Badge tone="ok">{verdict}</Badge>;
+  return <Badge severity="info">{verdict || 'Unknown'}</Badge>;
 };
 
 const TYPE_ICON = { ip: Server, hash: Hash, url: Link, domain: Globe };
+const TYPE_LABEL = { ip: 'IP address', hash: 'File hash', url: 'URL', domain: 'Domain' };
 
 // The EICAR file is a harmless, published antivirus test file that every engine flags on purpose
-const EXAMPLE = { label: 'EICAR test file (hash)', value: '44d88612fea8a8f36de82e1278abb02f' };
+const EXAMPLE = { label: 'EICAR test file hash', value: '44d88612fea8a8f36de82e1278abb02f' };
 
 const loadHistory = () => {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; } catch { return []; }
@@ -31,64 +33,43 @@ const getJson = async (url, options) => {
   return data;
 };
 
-function SourceCard({ title, icon: Icon, data, color }) {
+const formatValue = (val) => (typeof val === 'boolean' ? (val ? 'Yes' : 'No') : String(val ?? '–'));
+
+// One reputation source: its status in the header, its published fields as label/value rows
+function SourceCard({ title, data, flagged }) {
   if (!data) return null;
-  const hasError = data.error;
-
+  const status = data.error ? <Badge>Unavailable</Badge>
+    : data.found === false ? <Badge>No record</Badge>
+    : flagged ? <Badge severity="high">Flagged</Badge>
+    : <Badge tone="ok">Not flagged</Badge>;
   return (
-    <div style={{
-      background: 'var(--bg-card)',
-      border: `1px solid ${hasError ? 'var(--border)' : color || 'var(--border)'}`,
-      borderRadius: 10,
-      padding: '16px 20px',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <Icon size={18} color={hasError ? 'var(--text-muted)' : color || 'var(--accent-gold)'} />
-        <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)', letterSpacing: 1 }}>
-          {title}
-        </span>
-        {hasError && (
-          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)', background: 'var(--bg-elevated)', padding: '2px 8px', borderRadius: 4 }}>
-            UNAVAILABLE
-          </span>
-        )}
-        {!hasError && data.found === false && (
-          <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)', background: 'var(--bg-elevated)', padding: '2px 8px', borderRadius: 4 }}>
-            NO RECORD
-          </span>
-        )}
-      </div>
-
-      {hasError ? (
-        <p style={{ fontSize: 12, color: 'var(--text-muted)', margin: 0 }}>{data.error}</p>
-      ) : (
-        <div style={{ display: 'grid', gap: 6 }}>
-          {Object.entries(data)
-            .filter(([k]) => !['error', 'found'].includes(k))
-            .map(([key, val]) => (
-              <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
-                <span style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'capitalize' }}>
-                  {key.replace(/_/g, ' ')}
-                </span>
-                <span style={{
-                  fontSize: 12,
-                  color: key === 'is_malicious' ? (val ? '#ff4444' : 'var(--text-primary)')
-                       : key === 'malicious'    ? (val > 0 ? '#ff4444' : 'var(--text-primary)')
-                       : 'var(--text-primary)',
-                  fontWeight: 500,
-                  textAlign: 'right',
-                  maxWidth: 220,
-                  wordBreak: 'break-all',
-                }}>
-                  {typeof val === 'boolean' ? (val ? 'Yes' : 'No') : String(val ?? '—')}
-                </span>
-              </div>
-            ))}
-        </div>
+    <Card title={title} actions={status}>
+      {data.error ? <p className="muted">{data.error}</p> : (
+        <dl className="kv">
+          {Object.entries(data).filter(([k]) => !['error', 'found'].includes(k)).map(([key, val]) => (
+            <div key={key}>
+              <dt>{key.replace(/_/g, ' ')}</dt>
+              <dd>{formatValue(val)}</dd>
+            </div>
+          ))}
+        </dl>
       )}
-    </div>
+    </Card>
   );
 }
+
+const explain = (result, sources) => {
+  switch (result.verdict) {
+    case 'Not flagged': return `No detections from ${result.checked_by.join(' and ')}.`;
+    case 'Reported': return 'Reported on AbuseIPDB, below its malicious threshold.';
+    case 'Unknown': return result.checked_by?.length
+      ? `Not on the ${result.checked_by.join(' or ')}; no other source could answer, so it is not known to be safe.`
+      : 'No reputation source had data on it, so it is not known to be safe.';
+    case 'Not checked': return sources.note?.message;
+    case 'Flagged': return 'VirusTotal reports per-engine detections; weigh how many engines agree.';
+    default: return null;
+  }
+};
 
 export default function IOCHunter() {
   const [input, setInput]     = useState('');
@@ -100,7 +81,7 @@ export default function IOCHunter() {
   const lookupSeq = useRef(0); // only the newest lookup may show its answer
 
   async function lookup(value) {
-    const ioc = (value || input).trim();
+    const ioc = (value ?? input).trim();
     if (!ioc) return;
     const seq = ++lookupSeq.current;
 
@@ -130,6 +111,8 @@ export default function IOCHunter() {
     }
   }
 
+  const lookupValue = (value) => { setInput(value); lookup(value); };
+
   async function saveToOsint() {
     setSaveState('saving');
     try {
@@ -141,238 +124,102 @@ export default function IOCHunter() {
       setResult(r => ({ ...r, saved: true }));
       setSaveState(null);
     } catch (e) {
-      setSaveState(`Could not save (${e.message})`);
+      setSaveState(`Could not save (${e.message}).`);
     }
   }
 
-  const risk     = result ? (RISK_CONFIG[result.risk] || RISK_CONFIG.unknown) : null;
-  const TypeIcon = result ? (TYPE_ICON[result.type] || Shield) : null;
   const sources  = result?.sources || {};
+  const TypeIcon = result ? (TYPE_ICON[result.type] || Shield) : null;
+  const canSave  = result && ['Malicious', 'Flagged'].includes(result.verdict);
 
   return (
-    <div style={{ padding: '28px 32px', maxWidth: 960, margin: '0 auto' }}>
+    <div className="page-container page-stack">
+      <PageHeader
+        title="IOC Hunter"
+        description="Check an IP address (IPv4 or IPv6), file hash (MD5, SHA-1, SHA-256), URL or domain. IPs are checked against published blocklists and AbuseIPDB; hashes, URLs and domains against VirusTotal."
+      />
 
-      {/* Header */}
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-          <FileSearch size={28} color="var(--accent-gold)" />
-          <h1 style={{ fontSize: 24, fontWeight: 700, color: 'var(--text-primary)', margin: 0 }}>
-            IOC Hunter
-          </h1>
+      <Card>
+        <form className="ioc-form" onSubmit={e => { e.preventDefault(); if (!loading) lookup(); }}>
+          <Input
+            label="Indicator" hideLabel icon={Search} className="ioc-input"
+            value={input} onChange={e => setInput(e.target.value)}
+            placeholder="IP address, file hash, URL or domain"
+            autoComplete="off" spellCheck={false}
+          />
+          <Button type="submit" variant="primary" icon={loading ? Loader2 : undefined}
+            className={loading ? 'is-busy' : undefined} disabled={loading || !input.trim()}>
+            {loading ? 'Checking…' : 'Check'}
+          </Button>
+        </form>
+        <div className="small muted" style={{ marginTop: 'var(--s2)', display: 'flex', alignItems: 'center', gap: 'var(--s2)', flexWrap: 'wrap' }}>
+          Try a harmless test value:
+          <Button size="sm" variant="ghost" onClick={() => lookupValue(EXAMPLE.value)}>{EXAMPLE.label}</Button>
         </div>
-        <p style={{ color: 'var(--text-muted)', fontSize: 14, margin: 0 }}>
-          Paste an IP address (IPv4 or IPv6), file hash (MD5/SHA1/SHA256), URL, or domain. IPs are checked against
-          published blocklists and AbuseIPDB; hashes, URLs and domains against VirusTotal.
-        </p>
-      </div>
+      </Card>
 
-      {/* Search bar */}
-      <div style={{
-        display: 'flex', gap: 10, marginBottom: 16,
-        background: 'var(--bg-card)', border: '1px solid var(--border)',
-        borderRadius: 10, padding: '6px 6px 6px 16px',
-      }}>
-        <Search size={18} color="var(--text-muted)" style={{ alignSelf: 'center', flexShrink: 0 }} />
-        <input
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && !loading && lookup()}
-          placeholder="IP address, file hash, URL or domain"
-          aria-label="IP address, file hash, URL or domain"
-          style={{
-            flex: 1, background: 'none', border: 'none', outline: 'none',
-            color: 'var(--text-primary)', fontSize: 14, fontFamily: 'monospace',
-          }}
-        />
-        <button
-          onClick={() => lookup()}
-          disabled={loading || !input.trim()}
-          style={{
-            background: loading ? 'var(--bg-elevated)' : 'var(--accent-gold)',
-            color: loading ? 'var(--text-muted)' : '#000',
-            border: 'none', borderRadius: 7, padding: '10px 22px',
-            fontWeight: 700, fontSize: 13, cursor: loading ? 'not-allowed' : 'pointer',
-            display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0,
-          }}
-        >
-          {loading ? <><Loader size={14} className="spin" /> Analyzing...</> : 'Analyze'}
-        </button>
-      </div>
+      {error && <Card flush><ErrorState title="Lookup failed">{error}</ErrorState></Card>}
 
-      {/* Example */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 28 }}>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)', alignSelf: 'center' }}>Try:</span>
-        <button
-          onClick={() => { setInput(EXAMPLE.value); lookup(EXAMPLE.value); }}
-          style={{
-            background: 'var(--bg-elevated)', border: '1px solid var(--border)',
-            borderRadius: 6, padding: '4px 12px', fontSize: 12,
-            color: 'var(--text-secondary)', cursor: 'pointer',
-          }}
-        >
-          {EXAMPLE.label}
-        </button>
-      </div>
-
-      {/* Error */}
-      {error && (
-        <div role="alert" style={{
-          background: 'rgba(255,45,45,0.08)', border: '1px solid rgba(255,45,45,0.3)',
-          borderRadius: 8, padding: '12px 16px', marginBottom: 20,
-          color: '#ff6b6b', fontSize: 13,
-        }}>
-          {error}
-        </div>
+      {loading && (
+        <Card aria-busy="true"><Skeleton width="40%" height={20} /><div style={{ marginTop: 'var(--s3)' }}><Skeleton lines={3} /></div></Card>
       )}
 
-      {/* Results */}
-      {result && risk && (
-        <div style={{ display: 'grid', gap: 16 }}>
-
-          {/* Verdict banner */}
-          <div style={{
-            background: risk.bg,
-            border: `1px solid ${risk.color}`,
-            borderRadius: 12, padding: '20px 24px',
-            display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap',
-          }}>
-            <risk.icon size={40} color={risk.color} />
-            <div style={{ flex: 1, minWidth: 200 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 4 }}>
-                <span style={{ fontSize: 22, fontWeight: 800, color: risk.color }}>
-                  {result.verdict.toUpperCase()}
-                </span>
-                <span style={{
-                  background: 'var(--bg-elevated)', border: '1px solid var(--border)',
-                  borderRadius: 5, padding: '2px 10px', fontSize: 11,
-                  color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 5,
-                }}>
-                  {TypeIcon && <TypeIcon size={11} />}
-                  {result.type.toUpperCase()}
-                </span>
+      {result && (
+        <>
+          <Card>
+            <div className="verdict">
+              <div className="verdict-main">
+                <div className="verdict-line">
+                  {verdictBadge(result.risk, result.verdict)}
+                  <Badge>{TypeIcon && <TypeIcon size={12} aria-hidden="true" />}{TYPE_LABEL[result.type] || result.type}</Badge>
+                </div>
+                <h2 className="mono verdict-ioc">{result.ioc}</h2>
+                {explain(result, sources) && <p className="muted">{explain(result, sources)}</p>}
+                {result.tags?.length > 0 && (
+                  <div style={{ display: 'flex', gap: 'var(--s1)', flexWrap: 'wrap', marginTop: 'var(--s2)' }}>
+                    {result.tags.map(tag => <Badge key={tag}>{tag}</Badge>)}
+                  </div>
+                )}
               </div>
-              <code style={{ fontSize: 13, color: 'var(--text-primary)', wordBreak: 'break-all' }}>
-                {result.ioc}
-              </code>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 6 }}>
-                {result.verdict === 'Not flagged' && `No detections from ${result.checked_by.join(' and ')}.`}
-                {result.verdict === 'Reported' && `Reported on AbuseIPDB below its malicious threshold.`}
-                {result.verdict === 'Unknown' && (result.checked_by?.length
-                  ? `Not on the ${result.checked_by.join(' or ')}; no other source could answer, so it is not known to be safe.`
-                  : 'No reputation source had data on it, so it is not known to be safe.')}
-                {result.verdict === 'Not checked' && sources.note?.message}
-                {result.verdict === 'Flagged' && 'VirusTotal reports per-engine detections; weigh how many engines agree.'}
-              </div>
-            </div>
-            {result.tags?.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 5, alignItems: 'flex-end' }}>
-                {result.tags.map(tag => (
-                  <span key={tag} style={{
-                    background: 'var(--bg-elevated)', border: `1px solid ${risk.color}40`,
-                    borderRadius: 5, padding: '3px 10px', fontSize: 11, color: risk.color,
-                    whiteSpace: 'nowrap',
-                  }}>
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Save a malicious finding as an OSINT alert, only when the analyst asks */}
-          {['Malicious', 'Flagged'].includes(result.verdict) && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              {result.saved ? (
-                <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>Saved to OSINT alerts.</span>
-              ) : (
-                <button
-                  onClick={saveToOsint}
-                  disabled={saveState === 'saving'}
-                  style={{
-                    background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 6,
-                    padding: '6px 14px', fontSize: 13, color: 'var(--text-primary)', cursor: 'pointer',
-                    display: 'flex', alignItems: 'center', gap: 6,
-                  }}
-                >
-                  <Save size={14} /> {saveState === 'saving' ? 'Saving...' : 'Save to OSINT alerts'}
-                </button>
+              {canSave && (
+                <div className="verdict-actions">
+                  {result.saved ? <span className="small muted">Saved to OSINT alerts.</span> : (
+                    <Button icon={saveState === 'saving' ? Loader2 : Save} className={saveState === 'saving' ? 'is-busy' : undefined}
+                      onClick={saveToOsint} disabled={saveState === 'saving'}>
+                      {saveState === 'saving' ? 'Saving…' : 'Save to OSINT alerts'}
+                    </Button>
+                  )}
+                  {saveState && saveState !== 'saving' && <span role="alert" className="small">{saveState}</span>}
+                </div>
               )}
-              {saveState && saveState !== 'saving' && <span role="alert" style={{ fontSize: 13, color: '#ff6b6b' }}>{saveState}</span>}
             </div>
-          )}
+          </Card>
 
-          {/* Source cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 12 }}>
-            {sources.blocklist && (
-              <SourceCard
-                title="PUBLISHED BLOCKLISTS"
-                icon={Shield}
-                data={sources.blocklist}
-                color={sources.blocklist.found ? '#ff4444' : 'var(--border)'}
-              />
-            )}
-            {sources.abuseipdb && (
-              <SourceCard
-                title="ABUSEIPDB"
-                icon={Shield}
-                data={sources.abuseipdb}
-                color={sources.abuseipdb.is_malicious ? '#ff4444' : 'var(--border)'}
-              />
-            )}
-            {sources.virustotal && (
-              <SourceCard
-                title="VIRUSTOTAL"
-                icon={FileSearch}
-                data={sources.virustotal}
-                color={sources.virustotal.malicious > 0 ? '#ff4444' : 'var(--border)'}
-              />
-            )}
+          <div className="grid-fill">
+            {sources.blocklist && <SourceCard title="Published blocklists" data={sources.blocklist} flagged={Boolean(sources.blocklist.found)} />}
+            {sources.abuseipdb && <SourceCard title="AbuseIPDB" data={sources.abuseipdb} flagged={Boolean(sources.abuseipdb.is_malicious)} />}
+            {sources.virustotal && <SourceCard title="VirusTotal" data={sources.virustotal} flagged={sources.virustotal.malicious > 0} />}
           </div>
-        </div>
+        </>
       )}
 
-      {/* History (kept in this browser) */}
-      {history.length > 0 && (
-        <div style={{ marginTop: 36 }}>
-          <h3 style={{ fontSize: 13, color: 'var(--text-muted)', letterSpacing: 1, marginBottom: 12 }}>
-            RECENT LOOKUPS
-          </h3>
-          <div style={{ display: 'grid', gap: 6 }}>
-            {history.map(h => {
-              const hRisk = RISK_CONFIG[h.risk] || RISK_CONFIG.unknown;
-              const HTypeIcon = TYPE_ICON[h.type] || Shield;
-              return (
-                <button
-                  key={h.ioc}
-                  onClick={() => { setInput(h.ioc); lookup(h.ioc); }}
-                  style={{
-                    display: 'flex', alignItems: 'center', gap: 12, width: '100%', textAlign: 'left',
-                    background: 'var(--bg-card)', border: '1px solid var(--border)',
-                    borderRadius: 8, padding: '10px 14px', cursor: 'pointer', color: 'inherit',
-                  }}
-                >
-                  <HTypeIcon size={14} color="var(--text-muted)" />
-                  <code style={{ flex: 1, fontSize: 12, color: 'var(--text-primary)', wordBreak: 'break-all' }}>
-                    {h.ioc}
-                  </code>
-                  <span style={{
-                    fontSize: 11, fontWeight: 700, color: hRisk.color,
-                    background: hRisk.bg, padding: '2px 10px', borderRadius: 4,
-                    flexShrink: 0,
-                  }}>
-                    {(h.verdict || '').toUpperCase()}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      <style>{`
-        .spin { animation: spin 1s linear infinite; }
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      `}</style>
+      <Card title="Recent lookups" subtitle="The last 10 lookups, kept on this computer. Select one to check it again." flush>
+        {history.length === 0 ? (
+          <EmptyState title="No lookups yet">Indicators you check appear here.</EmptyState>
+        ) : (
+          <Table
+            caption="Recent lookups"
+            rows={history}
+            rowKey="ioc"
+            onRowClick={h => lookupValue(h.ioc)}
+            columns={[
+              { key: 'verdict', header: 'Verdict', width: 140, render: h => verdictBadge(h.risk, h.verdict) },
+              { key: 'type', header: 'Type', width: 110, render: h => TYPE_LABEL[h.type] || h.type || '–' },
+              { key: 'ioc', header: 'Indicator', mono: true, truncate: true, render: h => <span title={h.ioc}>{h.ioc}</span> },
+            ]}
+          />
+        )}
+      </Card>
     </div>
   );
 }

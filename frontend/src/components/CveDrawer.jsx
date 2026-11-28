@@ -1,30 +1,28 @@
 import { useState, useEffect } from 'react';
-import { X, ShieldAlert, ExternalLink, Brain, AlertTriangle, Server } from 'lucide-react';
-
-import { getRiskColor } from '../utils/riskScore';
+import { ShieldAlert, TriangleAlert, ExternalLink, Sparkles, Loader2, Server } from 'lucide-react';
+import { Modal, Badge, Button, ErrorState, Skeleton } from './ui';
 
 const API = 'http://127.0.0.1:8000';
 
-export default function CveDrawer({ cve, onClose, footer }) {
+const formatDate = (value) => (value ? new Date(value).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '–');
+
+// Content is keyed by CVE so its state starts fresh for each CVE
+function CveDetail({ cve }) {
   const [aiSummary, setAiSummary] = useState(null);
-  const [aiStatus, setAiStatus] = useState(null); // null | 'loading' | 'generating' | error text
-  const [correlationData, setCorrelationData] = useState(null);
+  const [aiStatus, setAiStatus] = useState('loading'); // null | 'loading' | 'generating' | error text
+  const [correlations, setCorrelations] = useState(null);
 
   useEffect(() => {
-    if (!cve) return;
-    setAiSummary(null);
-    setCorrelationData(null);
     // Only a stored summary is loaded here; generating one costs a GPT-4o call, so it waits for a click
-    setAiStatus('loading');
     fetch(`${API}/api/cves/${cve.cve_id}/ai-summary`)
       .then(r => r.json())
       .then(data => { setAiSummary(data.generated ? data : null); setAiStatus(null); })
-      .catch(() => setAiStatus('Could not load the stored summary'));
+      .catch(() => setAiStatus('Could not load the stored summary.'));
     fetch(`${API}/api/cves/${cve.cve_id}/correlations`)
       .then(r => r.json())
-      .then(setCorrelationData)
-      .catch(() => setCorrelationData(null));
-  }, [cve]);
+      .then(setCorrelations)
+      .catch(() => setCorrelations(null));
+  }, [cve.cve_id]);
 
   const generateSummary = async () => {
     setAiStatus('generating');
@@ -39,188 +37,135 @@ export default function CveDrawer({ cve, onClose, footer }) {
     }
   };
 
-  if (!cve) return null;
-  const band = (cve.risk_band || 'LOW').toUpperCase();
+  const generating = aiStatus === 'generating';
+  const affected = correlations?.affected_assets || [];
 
   return (
-    <div className="drawer-overlay" onClick={onClose}>
-      <div className="drawer" onClick={e => e.stopPropagation()}>
-        <div className="drawer-header">
+    <div className="stack">
+      {cve.cisa_kev ? (
+        <div className="callout callout-critical">
+          <ShieldAlert size={16} aria-hidden="true" />
           <div>
-            <div className="label-small">{cve.cve_id}</div>
-            <h2>CVE Detail</h2>
+            <div className="callout-title">Known exploited</div>
+            <div className="callout-text">
+              Listed in the CISA Known Exploited Vulnerabilities catalog{cve.ransomware_use ? ', with known use in ransomware campaigns' : ''}.
+            </div>
           </div>
-          <button className="close-btn" onClick={onClose}><X /></button>
         </div>
-        
-        <div className="drawer-content">
-          {!cve.cisa_kev && cve.actively_exploited && (
-            <div style={{ background: 'rgba(246, 173, 85, 0.12)', border: '1px solid #f6ad55', borderRadius: '4px', padding: '1rem', marginBottom: '2rem', color: '#f6ad55', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-              <AlertTriangle size={24} />
-              <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>
-                PUBLIC EXPLOIT AVAILABLE — NVD links an exploit; no confirmed exploitation in the wild
-              </div>
-            </div>
-          )}
-          {cve.cisa_kev && (
-            <div style={{ background: 'rgba(229, 62, 62, 0.15)', border: '1px solid #fc8181', borderRadius: '4px', padding: '1rem', marginBottom: '2rem', color: '#fc8181', display: 'flex', alignItems: 'center', gap: '1rem' }}>
-              <ShieldAlert size={24} />
-              <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>
-                ⚠ ACTIVELY EXPLOITED — {cve.ransomware_use ? 'Used in Ransomware Campaigns' : 'Listed in CISA Known Exploited Vulnerabilities Catalog'}
-              </div>
-            </div>
-          )}
+      ) : cve.actively_exploited && (
+        <div className="callout callout-high">
+          <TriangleAlert size={16} aria-hidden="true" />
+          <div>
+            <div className="callout-title">Public exploit</div>
+            <div className="callout-text">NVD links a public exploit. There is no confirmed exploitation in the wild.</div>
+          </div>
+        </div>
+      )}
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '1.5rem', marginBottom: '2rem' }}>
-            <div style={{ position: 'relative' }}>
-              <div className="risk-circle-large" style={{ border: `4px solid ${getRiskColor(Math.floor(cve.risk_score ?? 0))}` }}>
-  {Math.floor(cve.risk_score ?? 0)}
-              </div>
-              {cve.cisa_kev && (
-                <div style={{ position: 'absolute', top: -5, right: -5, background: 'var(--danger)', borderRadius: '50%', width: 24, height: 24, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', fontWeight: 'bold' }}>!</div>
-              )}
-            </div>
+      <section>
+        <dl className="facts">
+          <div><dt>Risk score</dt><dd>{Number(cve.risk_score ?? 0).toFixed(1)}{cve.risk_band && <Badge severity={cve.risk_band} />}</dd></div>
+          <div><dt>CVSS base</dt><dd>{cve.cvss_score ?? <span className="muted small">Not scored by NVD yet</span>}</dd></div>
+          <div>
+            <dt>EPSS probability</dt>
+            <dd>
+              {cve.epss_score == null ? <span className="muted small">Not scored yet</span> : `${(cve.epss_score * 100).toFixed(2)}%`}
+              {cve.epss_percentile != null && <span className="muted small">p{Math.round(cve.epss_percentile * 100)}</span>}
+            </dd>
+          </div>
+          <div><dt>Published</dt><dd>{formatDate(cve.published_date)}</dd></div>
+        </dl>
+        <p className="muted small" style={{ marginTop: 'var(--s3)' }}>
+          The risk score weighs CVSS, EPSS percentile, CISA KEV, a public exploit, your assets, ransomware use and recency.
+          KEV sets a minimum of High, or Critical if the CVE affects your assets.
+        </p>
+      </section>
+
+      <section>
+        <h3 className="section-title">Description</h3>
+        <p>{cve.description}</p>
+      </section>
+
+      {affected.length > 0 && (
+        <section>
+          <h3 className="section-title">Affects your assets</h3>
+          <div className="callout callout-high">
+            <Server size={16} aria-hidden="true" />
             <div>
-              <div className="label-small">ThreatLens Risk Score</div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', marginTop: '0.2rem' }}>
-                {band} band. Weighted from CVSS, EPSS percentile, CISA KEV, public exploit, your assets, ransomware use and recency; KEV sets a minimum of HIGH (CRITICAL if it affects your assets).
-              </div>
-            </div>
-          </div>
-
-          <div className="info-grid">
-            <div className="info-item">
-              <span className="label-small">CVSS Base Score</span>
-              <div className="value">{cve.cvss_score ?? 'Not scored by NVD yet'}</div>
-            </div>
-            <div className="info-item">
-              <span className="label-small">EPSS Probability</span>
-              <div className="value">{cve.epss_score == null ? 'Not scored by EPSS yet' : `${(cve.epss_score * 100).toFixed(2)}%`}</div>
-            </div>
-            <div className="info-item">
-              <span className="label-small">Published Date</span>
-              <div className="value">{new Date(cve.published_date).toLocaleDateString()}</div>
-            </div>
-            <div className="info-item">
-              <span className="label-small">Risk Band</span>
-              <div className="value" style={{ color: getRiskColor(Math.floor(cve.risk_score ?? 0)) }}>
-                {band}
-              </div>
-            </div>
-          </div>
-
-          <div className="description-box" style={{ marginTop: '2rem' }}>
-            <div className="label-small">Description</div>
-            <p style={{ lineHeight: 1.6, marginTop: '0.5rem' }}>{cve.description}</p>
-          </div>
-
-          {/* Your assets whose software NVD lists as affected (CPE match) */}
-          {correlationData?.affected_assets?.length > 0 && (
-            <div style={{
-              background: 'rgba(245, 158, 11, 0.12)',
-              border: '1px solid #f59e0b',
-              borderRadius: '6px',
-              padding: '1rem',
-              marginBottom: '2rem',
-              color: '#f59e0b'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-                <Server size={20} />
-                <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>AFFECTS YOUR ASSETS</div>
-              </div>
-              <div style={{ fontSize: '0.85rem', lineHeight: 1.5 }}>
-                {correlationData.affected_assets.map(a => `${a.name} (${a.software.join(', ')})`).join('; ')}
-              </div>
-              <div style={{ fontSize: '0.75rem', marginTop: '0.5rem', color: 'var(--text-muted)' }}>
+              <ul style={{ listStyle: 'none', display: 'grid', gap: 2 }}>
+                {affected.map(a => <li key={a.name}><strong>{a.name}</strong> <span className="callout-text">{a.software.join(', ')}</span></li>)}
+              </ul>
+              <div className="callout-text small" style={{ marginTop: 'var(--s1)' }}>
                 Software name matches a product NVD lists as vulnerable; installed versions are not compared.
               </div>
-              {correlationData.open_incidents?.length > 0 && (
-                <div style={{ marginTop: '0.75rem', fontSize: '0.8rem' }}>
-                  <strong>Open incidents on these assets:</strong>{' '}
-                  {correlationData.open_incidents.map(i => `INC-${i.id} (${i.severity} ${i.type})`).join(', ')}
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Not evidence that this CVE was exploited.</div>
+              {correlations.open_incidents?.length > 0 && (
+                <div className="small" style={{ marginTop: 'var(--s2)' }}>
+                  Open incidents on these assets: {correlations.open_incidents.map(i => `INC-${i.id} (${i.severity} ${i.type})`).join(', ')}.
+                  <span className="callout-text"> Not evidence that this CVE was exploited.</span>
                 </div>
               )}
             </div>
-          )}
-
-          {/* AI Summary Section */}
-          <div style={{ marginTop: '2rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-              <Brain size={18} color="var(--accent-gold)" />
-              <div className="label-small" style={{ margin: 0 }}>AI Analyst Summary (GPT-4o)</div>
-            </div>
-
-            {aiStatus === 'loading' ? (
-              <div className="skeleton" style={{ height: '20px', width: '60%' }}></div>
-            ) : aiSummary ? (
-              <div style={{
-                background: 'rgba(255,255,255,0.02)',
-                border: '1px solid var(--border)',
-                borderRadius: '6px',
-                padding: '1.25rem'
-              }}>
-                <div style={{ display: 'grid', gap: '1rem', marginBottom: '1rem' }}>
-                  {[['What is Affected', aiSummary.what_is_affected],
-                    ['How It Works', aiSummary.how_it_works],
-                    ['What to Do Right Now', aiSummary.what_to_do_now]].map(([title, text]) => (
-                    <div key={title}>
-                      <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem', fontSize: '0.9rem' }}>
-                        {title}
-                      </div>
-                      <div style={{ color: 'var(--text-secondary)', lineHeight: 1.5, fontSize: '0.85rem' }}>
-                        {text}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{
-                  paddingTop: '0.75rem',
-                  borderTop: '1px solid var(--border)',
-                  fontSize: '0.75rem',
-                  color: 'var(--text-muted)'
-                }}>
-                  AI-generated by GPT-4o from this CVE's NVD, EPSS and CISA KEV fields at {new Date(aiSummary.generated_at).toLocaleString()}.
-                </div>
-              </div>
-            ) : (
-              <div style={{
-                background: 'rgba(255,255,255,0.02)',
-                border: '1px solid var(--border)',
-                borderRadius: '6px',
-                padding: '1.25rem',
-                textAlign: 'center',
-                color: 'var(--text-muted)',
-                fontSize: '0.85rem'
-              }}>
-                {aiStatus && aiStatus !== 'generating' && (
-                  <div style={{ color: 'var(--danger)', marginBottom: '0.75rem' }}>Could not generate summary: {aiStatus}</div>
-                )}
-                <button className="gold-button" onClick={generateSummary} disabled={aiStatus === 'generating'}>
-                  {aiStatus === 'generating' ? 'Generating...' : 'Generate summary with GPT-4o'}
-                </button>
-              </div>
-            )}
           </div>
+        </section>
+      )}
 
-          <div style={{ marginTop: '2rem' }}>
-             <a 
-              href={`https://nvd.nist.gov/vuln/detail/${cve.cve_id}`} 
-              target="_blank" 
-              rel="noreferrer"
-              style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--accent-gold)', textDecoration: 'none', fontSize: '0.9rem' }}
-            >
-              View on NVD <ExternalLink size={14} />
-            </a>
-          </div>
-
-          {footer && (
-            <div style={{ marginTop: '2rem' }}>
-              {footer}
-            </div>
+      <section>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--s2)', marginBottom: 'var(--s2)' }}>
+          <h3 className="section-title" style={{ margin: 0 }}>AI analyst summary</h3>
+          {aiStatus !== 'loading' && (
+            <Button size="sm" icon={generating ? Loader2 : Sparkles} className={generating ? 'is-busy' : undefined}
+              onClick={generateSummary} disabled={generating}>
+              {generating ? 'Generating…' : aiSummary ? 'Regenerate' : 'Generate with GPT-4o'}
+            </Button>
           )}
         </div>
-      </div>
+        {aiStatus === 'loading' ? <Skeleton lines={3} /> : (
+          <>
+            {aiStatus && !generating && <ErrorState title="Could not generate the summary">{aiStatus}</ErrorState>}
+            {aiSummary ? (
+              <div style={{ display: 'grid', gap: 'var(--s3)' }}>
+                {[['What is affected', aiSummary.what_is_affected],
+                  ['How it works', aiSummary.how_it_works],
+                  ['What to do now', aiSummary.what_to_do_now]].map(([title, text]) => (
+                  <div key={title}>
+                    <div style={{ fontWeight: 600 }}>{title}</div>
+                    <div style={{ color: 'var(--text-2)' }}>{text}</div>
+                  </div>
+                ))}
+                <div className="muted small">
+                  Generated by GPT-4o from this CVE's NVD, EPSS and CISA KEV fields, {new Date(aiSummary.generated_at).toLocaleString()}.
+                </div>
+              </div>
+            ) : !aiStatus && (
+              <p className="muted">No summary yet. Generating one uses one GPT-4o request.</p>
+            )}
+          </>
+        )}
+      </section>
+
+      <a href={`https://nvd.nist.gov/vuln/detail/${cve.cve_id}`} target="_blank" rel="noreferrer"
+        style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--s1)', width: 'fit-content' }}>
+        View on NVD <ExternalLink size={14} aria-hidden="true" />
+      </a>
     </div>
+  );
+}
+
+export default function CveDrawer({ cve, onClose, footer }) {
+  return (
+    <Modal
+      drawer
+      open={Boolean(cve)}
+      onClose={onClose}
+      footer={cve && footer}
+      title={cve && (
+        <span style={{ display: 'grid', gap: 2 }}>
+          <span className="mono" style={{ fontSize: 'var(--fs-h3)' }}>{cve.cve_id}</span>
+          <span className="small muted" style={{ fontWeight: 400 }}>CVE detail</span>
+        </span>
+      )}
+    >
+      {cve && <CveDetail key={cve.cve_id} cve={cve} />}
+    </Modal>
   );
 }

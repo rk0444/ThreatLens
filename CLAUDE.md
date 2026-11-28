@@ -49,4 +49,5 @@ Installed app (`main.js`, not dev): keeps its data in `%APPDATA%\threatlens-v2` 
 - Groq API is restricted; don't use it
 - AI Copilot uses GPT-4o via GPT4O_API_KEY
 - API keys are edited in Settings (desktop app only) and written to `.env`; the backend reads them at startup, so a restart applies them
-- Remaining work: UI polish; packaging: app icon (no `assets/`), code signing, bundling Python (installed app needs system Python 3)
+- UI: design tokens (both themes, severity scale) live in `frontend/src/index.css`; shared components (Button, Badge, Card, Table, Input, Modal/drawer, Tabs, EmptyState, ErrorState, Skeleton, PageHeader, KpiStrip) in `frontend/src/components/ui.jsx`. Build pages from these; severity colours are for risk only and always show with a label; IBM Plex is bundled (no Google Fonts)
+- Remaining work: packaging: app icon (no `assets/`), code signing, bundling Python (installed app needs system Python 3)
