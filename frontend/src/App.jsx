@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { HashRouter as Router, Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import { Sparkles, X } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
 import { Badge, Button, Modal } from './components/ui';
+import { useWebSocket } from './hooks/useWebSocket';
 
 // Pages
 import Overview from './pages/Overview';
@@ -23,7 +24,6 @@ function AppLayout() {
   const [checking, setChecking] = useState(true);
   const [toast, setToast] = useState(null);
   const [criticalAlert, setCriticalAlert] = useState(null);
-  const wsRef = useRef(null);
   
   const isOnboarding = location.pathname === '/onboarding';
 
@@ -73,24 +73,16 @@ function AppLayout() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [navigate]);
 
-  // Global WebSocket
-  useEffect(() => {
-    wsRef.current = new WebSocket('ws://127.0.0.1:8000/ws/events');
-    wsRef.current.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'MORNING_BRIEF_GENERATED') {
-          setToast({ title: 'Morning Brief', message: 'GPT-4o brief is ready.' });
-          setTimeout(() => setToast(null), 5000);
-        } else if (msg.type === 'NEW_INCIDENT' && msg.data.severity === 'Critical') {
-          setCriticalAlert(msg.data);
-          // Auto dismiss after 5s
-          setTimeout(() => setCriticalAlert(null), 5000);
-        }
-      } catch { /* ignore malformed messages */ }
-    };
-    return () => { if (wsRef.current) wsRef.current.close(); };
-  }, []);
+  // Global alerts, on the shared connection every page uses
+  useWebSocket(useCallback(msg => {
+    if (msg.type === 'MORNING_BRIEF_GENERATED') {
+      setToast({ title: 'Morning Brief', message: 'GPT-4o brief is ready.' });
+      setTimeout(() => setToast(null), 5000);
+    } else if (msg.type === 'NEW_INCIDENT' && msg.data?.severity === 'Critical') {
+      setCriticalAlert(msg.data);
+      setTimeout(() => setCriticalAlert(null), 5000); // auto-dismiss after 5 s
+    }
+  }, []));
 
   if (checking) return null; // or a loading spinner
 

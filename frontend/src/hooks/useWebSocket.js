@@ -1,8 +1,8 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef } from 'react';
 
 const WS_URL = 'ws://127.0.0.1:8000/ws/events';
-const RECONNECT_DELAY_MS = 3000;
-const MAX_RECONNECT_ATTEMPTS = 10;
+const RECONNECT_MIN_MS = 3000;
+const RECONNECT_MAX_MS = 30000;
 
 /**
  * useWebSocket — shared, auto-reconnecting WebSocket hook
@@ -10,71 +10,44 @@ const MAX_RECONNECT_ATTEMPTS = 10;
  * @param {function} onMessage  - called with parsed JSON payload on each message
  * @param {boolean}  enabled    - set false to skip connecting (e.g. feature-flagged pages)
  *
- * Usage:
- *   useWebSocket((data) => {
- *     if (data.type === 'NEW_INCIDENT') setIncidents(prev => [data.data, ...prev]);
- *   });
+ * Keeps reconnecting while mounted (3 s, doubling up to 30 s): the backend's first start syncs
+ * feeds before it answers, and live alerts must resume whenever it comes back.
  */
 export function useWebSocket(onMessage, enabled = true) {
-  const wsRef        = useRef(null);
-  const attemptsRef  = useRef(0);
-  const timerRef     = useRef(null);
   const onMessageRef = useRef(onMessage);
 
-  // Keep ref current so reconnect closure always calls latest handler
+  // Keep ref current so the open socket always calls the latest handler
   useEffect(() => { onMessageRef.current = onMessage; }, [onMessage]);
 
-  const connect = useCallback(() => {
-    if (!enabled) return;
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
+  useEffect(() => {
+    if (!enabled) return undefined;
+    let ws = null;
+    let timer = null;
+    let delay = RECONNECT_MIN_MS;
+    let stopped = false;
 
-    try {
-      const ws = new WebSocket(WS_URL);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        attemptsRef.current = 0;
-        console.debug('[WS] Connected to', WS_URL);
-      };
-
+    const connect = () => {
+      ws = new WebSocket(WS_URL);
+      ws.onopen = () => { delay = RECONNECT_MIN_MS; };
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data);
-          onMessageRef.current?.(data);
+          onMessageRef.current?.(JSON.parse(event.data));
         } catch (e) {
           console.warn('[WS] Failed to parse message:', event.data, e);
         }
       };
-
-      ws.onerror = (err) => {
-        console.warn('[WS] Error:', err);
+      ws.onclose = () => {
+        if (stopped) return;
+        timer = setTimeout(connect, delay);
+        delay = Math.min(delay * 2, RECONNECT_MAX_MS);
       };
-
-      ws.onclose = (event) => {
-        console.debug(`[WS] Closed (code=${event.code}). Attempt ${attemptsRef.current + 1}/${MAX_RECONNECT_ATTEMPTS}`);
-        if (attemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
-          attemptsRef.current += 1;
-          timerRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
-        } else {
-          console.warn('[WS] Max reconnect attempts reached. Giving up.');
-        }
-      };
-    } catch (e) {
-      console.error('[WS] Failed to create WebSocket:', e);
-    }
-  }, [enabled]);
-
-  useEffect(() => {
-    connect();
-    return () => {
-      // Cleanup: close socket and cancel any pending reconnect
-      clearTimeout(timerRef.current);
-      if (wsRef.current) {
-        wsRef.current.onclose = null; // prevent reconnect loop on unmount
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-      attemptsRef.current = 0;
     };
-  }, [connect]);
+    connect();
+
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      ws?.close();
+    };
+  }, [enabled]);
 }

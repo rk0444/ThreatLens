@@ -30,7 +30,7 @@ const TopBar = () => {
       .then(data => { if (alive) { setHealth(data); setUnreachable(false); } })
       .catch(() => { if (alive) setUnreachable(true); });
     load();
-    const timer = setInterval(load, 60000);
+    const timer = setInterval(load, 15000); // the monitor checks in every 10 s; the agent state should follow quickly
     return () => { alive = false; clearInterval(timer); };
   }, []);
 

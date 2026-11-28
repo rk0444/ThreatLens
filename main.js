@@ -1,5 +1,5 @@
 /* eslint-env node */
-const { app, BrowserWindow, Tray, Menu, nativeImage, Notification, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, nativeImage, Notification, ipcMain, dialog, nativeTheme } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -12,6 +12,14 @@ let monitorProcesses = [];  // agent/network_monitor.py and agent/process_monito
 let quitting = false;
 
 const API = 'http://127.0.0.1:8000';
+
+// Window chrome in the app's theme colours (frontend/src/index.css): page background, top bar, window-button symbols
+const WINDOW_THEMES = {
+  dark:  { bg: '#0E1116', bar: '#151A21', symbol: '#E6EAF0' },
+  light: { bg: '#F6F7F9', bar: '#FFFFFF', symbol: '#161B22' },
+};
+const TOPBAR_HEIGHT = 44; // --topbar-height
+const windowTheme = () => WINDOW_THEMES[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'];
 // The installed app's folder is read-only, so its data (.env, database, Python packages, logs) lives in user data
 const dataDir = () => app.getPath('userData');
 const envPath = () => (isDev ? path.join(__dirname, '.env') : path.join(dataDir(), '.env'));
@@ -32,10 +40,10 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const appUrl = () => (isDev ? 'http://127.0.0.1:5173' : `file://${path.join(__dirname, 'frontend/dist/index.html')}`);
 const LOADING_PAGE = 'data:text/html;charset=utf-8,' + encodeURIComponent(`<!doctype html>
 <html><body style="margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
-background:#0D1B2A;color:#cbd5e1;font-family:Segoe UI,sans-serif">
-<div style="text-align:center"><div style="font-size:22px;color:#e0b84a;margin-bottom:10px">ThreatLens</div>
+background:#0E1116;color:#A6B0BD;font-family:Segoe UI,sans-serif">
+<div style="text-align:center"><div style="font-size:20px;font-weight:600;color:#E6EAF0;margin-bottom:8px">ThreatLens</div>
 <div>Starting ThreatLens services…</div>
-<div style="font-size:12px;color:#64748b;margin-top:8px">The first launch installs components and can take a few minutes.</div>
+<div style="font-size:12px;color:#8591A0;margin-top:8px">The first launch installs components and can take a few minutes.</div>
 </div></body></html>`);
 
 function logTo(name) {
@@ -121,7 +129,7 @@ function createWindow() {
     height: 800,
     minWidth: 1024,
     minHeight: 768,
-    backgroundColor: '#0D1B2A',
+    backgroundColor: windowTheme().bg,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -130,10 +138,7 @@ function createWindow() {
       sandbox: false, // Sometimes helpful for dev
     },
     titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      color: '#0D1B2A',
-      symbolColor: '#F0F4F8'
-    }
+    titleBarOverlay: { color: windowTheme().bar, symbolColor: windowTheme().symbol, height: TOPBAR_HEIGHT }
   });
 
   // The installed app shows a holding page until its backend answers (first launch installs Python packages);
@@ -165,22 +170,33 @@ function createWindow() {
   });
 }
 
+// Reads the same /api/health the app's top bar shows, so the tray never claims a status it hasn't checked
+async function showFeedStatus() {
+  let body;
+  try {
+    const health = await (await fetch(`${API}/api/health`, { signal: AbortSignal.timeout(5000) })).json();
+    const names = { nvd: 'NVD', otx: 'OTX', abuseipdb: 'AbuseIPDB', virustotal: 'VirusTotal', ai: 'GPT-4o', agent: 'Agent' };
+    body = Object.entries(names).filter(([k]) => health[k]).map(([k, n]) => `${n}: ${health[k].status}`).join(' · ');
+  } catch {
+    body = 'The ThreatLens backend is not answering.';
+  }
+  new Notification({ title: 'ThreatLens data feeds', body }).show();
+}
+
 function createTray() {
   const iconPath = path.join(__dirname, 'assets', 'icon.png');
   const icon = fs.existsSync(iconPath) ? nativeImage.createFromPath(iconPath) : nativeImage.createEmpty();
   tray = new Tray(icon);
   
   const contextMenu = Menu.buildFromTemplate([
-    { label: 'ThreatLens V2.0', enabled: false },
+    { label: `ThreatLens ${app.getVersion()}`, enabled: false },
     { type: 'separator' },
-    { label: 'Open Dashboard', click: () => { if (mainWindow) mainWindow.show(); } },
-    { label: 'System Status', click: () => { 
-        new Notification({ title: 'ThreatLens Status', body: 'All systems operational. Actively monitoring.' }).show();
-    } },
+    { label: 'Open ThreatLens', click: () => { if (mainWindow) mainWindow.show(); } },
+    { label: 'Data feed status', click: showFeedStatus },
     { type: 'separator' },
     { label: 'Quit ThreatLens', click: () => { app.quit(); } }
   ]);
-  tray.setToolTip('ThreatLens - Active Monitoring');
+  tray.setToolTip('ThreatLens');
   tray.setContextMenu(contextMenu);
 }
 
@@ -189,11 +205,15 @@ ipcMain.on('notify', (event, { title, body }) => {
   new Notification({ title, body }).show();
 });
 
-ipcMain.handle('get-status', async () => {
-  return { status: 'System Operational', timestamp: new Date().toISOString() };
-});
-
 ipcMain.handle('read-env', async () => readEnvFile());
+
+// The page tells the window which theme it shows (it may differ from Windows' own setting)
+ipcMain.on('set-window-theme', (event, theme) => {
+  const t = WINDOW_THEMES[theme];
+  if (!t || !mainWindow) return;
+  mainWindow.setBackgroundColor(t.bg);
+  mainWindow.setTitleBarOverlay({ color: t.bar, symbolColor: t.symbol, height: TOPBAR_HEIGHT });
+});
 
 // Replaces only the given keys' lines, so comments and other settings in .env survive
 ipcMain.handle('write-env', async (event, envData) => {

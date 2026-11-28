@@ -223,7 +223,7 @@ const Onboarding = () => {
           <ul className="summary-list">
             <li>
               <span>API keys</span>
-              <span>{keysSaved ? `${keysSaved} saved; restart ThreatLens to apply them` : desktop ? 'None entered' : 'Not available outside the desktop app'}</span>
+              <span>{keysSaved ? `${keysSaved} saved; restart ThreatLens to apply them` : desktop ? 'None entered during setup' : 'Not available outside the desktop app'}</span>
             </li>
             <li><span>Endpoints registered in setup</span><span>{registered.length ? registered.join(', ') : 'None'}</span></li>
             <li><span>Endpoints known to ThreatLens</span><span>{assets ? assets.length : '–'}</span></li>
