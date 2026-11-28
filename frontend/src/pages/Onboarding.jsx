@@ -8,11 +8,10 @@ const Onboarding = () => {
   const [step, setStep] = useState(1);
   const [keys, setKeys] = useState({
     NVD_API_KEY: '',
-    ALIENVAULT_API_KEY: '',
+    OTX_API_KEY: '',
     ABUSEIPDB_API_KEY: '',
     VIRUSTOTAL_API_KEY: '',
-    OPENAI_API_KEY: '',
-    GROQ_API_KEY: ''
+    GPT4O_API_KEY: ''
   });
   
   const [asset, setAsset] = useState({
@@ -162,11 +161,10 @@ const Onboarding = () => {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '2rem' }}>
                 {[
                   { id: 'NVD_API_KEY', label: 'NVD API Key', desc: 'Increases rate limit from 5 to 50 req/30s' },
-                  { id: 'ALIENVAULT_API_KEY', label: 'AlienVault OTX API Key', desc: 'Required for global threat intelligence' },
+                  { id: 'OTX_API_KEY', label: 'AlienVault OTX API Key', desc: 'Required for global threat intelligence' },
                   { id: 'ABUSEIPDB_API_KEY', label: 'AbuseIPDB API Key', desc: 'Required for IP reputation checking' },
                   { id: 'VIRUSTOTAL_API_KEY', label: 'VirusTotal API Key', desc: 'Required for file hash lookup' },
-                  { id: 'OPENAI_API_KEY', label: 'OpenAI API Key', desc: 'Required for AI Copilot (GPT-4o)' },
-                  { id: 'GROQ_API_KEY', label: 'Groq API Key', desc: 'Required for fast LLM inference' }
+                  { id: 'GPT4O_API_KEY', label: 'GPT-4o API Key', desc: 'Required for AI Copilot and the morning brief' }
                 ].map(input => (
                   <div key={input.id}>
                     <label style={{ display: 'block', marginBottom: '4px', fontSize: '0.9rem', color: 'var(--text-primary)' }}>

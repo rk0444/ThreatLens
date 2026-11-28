@@ -95,13 +95,14 @@ DATABASE_URL=sqlite:///./backend/database/threatlens.sqlite
 # API Keys (optional for enhanced features)
 NVD_API_KEY=your_nvd_api_key
 ABUSEIPDB_API_KEY=your_abuseipdb_api_key
+OTX_API_KEY=your_alienvault_otx_api_key
+VIRUSTOTAL_API_KEY=your_virustotal_api_key
 
 # AI/ML Configuration
-OPENAI_API_KEY=your_openai_api_key_here
-GROQ_API_KEY=your_groq_api_key_here
+# AI Copilot, CVE summaries, morning brief
+GPT4O_API_KEY=your_gpt4o_api_key_here
 
 # AI Model Configuration
-GROQ_MODEL=llama-3-70b-8192
 OPENAI_MODEL=gpt-4o
 
 # Vector Store Configuration

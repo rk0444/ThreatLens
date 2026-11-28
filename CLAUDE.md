@@ -48,4 +48,5 @@ Installed app (`main.js`, not dev): keeps its data in `%APPDATA%\threatlens-v2` 
 - Don't kill the backend while a sync job is running, and don't `git stash`: `threatlens.sqlite-shm` is tracked and a stale one causes "disk I/O error" on startup (fix: move the -shm file aside)
 - Groq API is restricted; don't use it
 - AI Copilot uses GPT-4o via GPT4O_API_KEY
-- Remaining work: Settings page, UI polish; packaging: app icon (no `assets/`), code signing, bundling Python (installed app needs system Python 3)
+- API keys are edited in Settings (desktop app only) and written to `.env`; the backend reads them at startup, so a restart applies them
+- Remaining work: UI polish; packaging: app icon (no `assets/`), code signing, bundling Python (installed app needs system Python 3)

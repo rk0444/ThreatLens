@@ -195,20 +195,30 @@ ipcMain.handle('get-status', async () => {
 
 ipcMain.handle('read-env', async () => readEnvFile());
 
+// Replaces only the given keys' lines, so comments and other settings in .env survive
 ipcMain.handle('write-env', async (event, envData) => {
-  const updatedEnv = { ...readEnvFile(), ...envData };
-  const envString = Object.entries(updatedEnv)
-    .map(([key, value]) => `${key}=${value}`)
-    .join('\n');
-  fs.writeFileSync(envPath(), envString, 'utf8');
+  const pending = {};
+  for (const [key, value] of Object.entries(envData || {})) {
+    if (!/^[A-Z0-9_]+$/.test(key)) throw new Error(`Invalid key name: ${key}`);
+    pending[key] = String(value ?? '').replace(/[\r\n]/g, '').trim(); // a newline would inject another setting
+  }
+  const lines = fs.existsSync(envPath()) ? fs.readFileSync(envPath(), 'utf8').split(/\r?\n/) : [];
+  const out = lines.map(line => {
+    const key = (line.match(/^([^=#]+)=/) || [])[1]?.trim();
+    if (key && key in pending) {
+      const value = pending[key];
+      delete pending[key];
+      return `${key}=${value}`;
+    }
+    return line;
+  });
+  for (const [key, value] of Object.entries(pending)) out.push(`${key}=${value}`);
+  fs.writeFileSync(envPath(), out.join('\n'), 'utf8');
   return true;
 });
 
 ipcMain.handle('get-app-info', async () => {
-  return {
-    version: app.getVersion(),
-    buildDate: new Date().toISOString().split('T')[0], // Approximation for now
-  };
+  return { version: app.getVersion(), autoLaunch: app.getLoginItemSettings().openAtLogin };
 });
 
 ipcMain.handle('toggle-auto-launch', async (event, enable) => {
