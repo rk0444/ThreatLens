@@ -58,6 +58,10 @@ def fetch_osint_alerts(db_session: Session, notify=None):
                             "source": "AlienVault OTX"
                         }
                     }))
-                    
+        else:
+            # Raise so the scheduler logs a failed run and /api/health shows OTX as Down
+            raise RuntimeError(f"OTX returned HTTP {response.status_code}")
+
     except Exception as e:
         print(f"Error fetching OSINT alerts: {e}")
+        raise

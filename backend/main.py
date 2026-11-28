@@ -63,6 +63,7 @@ manager = ConnectionManager()
 app_scheduler = None  # set in lifespan; /api/system/shutdown waits for its running jobs
 JOB_THREAD = "threatlens-job"  # name of one-off background job threads, joined on shutdown
 app_loop = None  # set in lifespan; scheduler jobs run in threads and must hop onto it
+running_jobs = {}  # job name -> start time (UTC) while a sync runs; /api/health reports it as Syncing
 
 
 def notify(message: str):
@@ -76,6 +77,7 @@ def safe_run_job(job_func, job_name):
     import inspect
     db_gen = db.get_db()
     db_session = next(db_gen)
+    running_jobs[job_name] = datetime.now(timezone.utc)
     try:
         print(f"[SCHEDULER] Starting job: {job_name}")
         sig = inspect.signature(job_func)
@@ -94,6 +96,7 @@ def safe_run_job(job_func, job_name):
         db_session.add(log)
         db_session.commit()
     finally:
+        running_jobs.pop(job_name, None)
         db_gen.close()
 
 def rematch_in_background():
@@ -345,15 +348,31 @@ async def get_overview(db: Session = Depends(db.get_db)):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+def _ago(seconds: float) -> str:
+    return f"{int(seconds)}s ago" if seconds < 60 else f"{int(seconds // 60)}m ago"
+
+
+def _sync_status(db_session, job_name: str, interval_minutes: int, now: datetime) -> dict:
+    """A feed's state from its sync runs (SchedulerLog), not from whether new records happened to arrive."""
+    started = running_jobs.get(job_name)
+    if started:
+        return {"status": "Syncing", "detail": f"started {_ago((now - started).total_seconds())}"}
+    last = (db_session.query(models.SchedulerLog).filter(models.SchedulerLog.job_name == job_name)
+            .order_by(models.SchedulerLog.ran_at.desc()).first())
+    if not last or not last.ran_at:
+        return {"status": "Waiting", "detail": "no sync yet"}
+    ran_at = last.ran_at if last.ran_at.tzinfo else last.ran_at.replace(tzinfo=timezone.utc)  # SQLite stores naive UTC
+    age = (now - ran_at).total_seconds()
+    if last.status != "Success":
+        return {"status": "Down", "detail": f"last sync failed {_ago(age)}"}
+    if age > 2 * interval_minutes * 60:
+        return {"status": "Delayed", "detail": f"last sync {_ago(age)}"}
+    return {"status": "Live", "detail": f"synced {_ago(age)}"}
+
+
 @app.get("/api/health")
 async def get_health(db: Session = Depends(db.get_db)):
     now = datetime.now(timezone.utc)
-    # NVD: check most recent CVE ingested
-    latest_cve = db.query(models.CVE).order_by(models.CVE.created_at.desc()).first()
-    nvd_mins = (now - latest_cve.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 60 if latest_cve and latest_cve.created_at else 9999
-    # OSINT/OTX: check most recent OSINT alert
-    latest_osint = db.query(models.OSINTAlert).order_by(models.OSINTAlert.created_at.desc()).first()
-    otx_mins = (now - latest_osint.created_at.replace(tzinfo=timezone.utc)).total_seconds() / 60 if latest_osint and latest_osint.created_at else 9999
     # Agent: most recently seen asset
     latest_asset = db.query(models.Asset).order_by(models.Asset.last_seen.desc()).first()
     agent_secs = (now - latest_asset.last_seen.replace(tzinfo=timezone.utc)).total_seconds() if latest_asset and latest_asset.last_seen else 9999
@@ -362,14 +381,12 @@ async def get_health(db: Session = Depends(db.get_db)):
     vt_key = os.getenv("VIRUSTOTAL_API_KEY", "")
     abuse_key = os.getenv("ABUSEIPDB_API_KEY", "")
     ai_key = os.getenv("GPT4O_API_KEY", "")
-
-    # Status logic with thresholds
-    nvd_status = "Live" if nvd_mins < 20 else ("Delayed" if nvd_mins < 60 else "Down")
-    otx_status = "Live" if otx_mins < 40 else ("Delayed" if otx_mins < 120 else "Down")
+    otx_key = os.getenv("OTX_API_KEY", "")
 
     return {
-        "nvd":      {"status": nvd_status, "detail": f"{int(nvd_mins)}m ago"},
-        "otx":      {"status": otx_status, "detail": f"{int(otx_mins)}m ago"},
+        # Intervals match the scheduler jobs in lifespan (NVD 15 min, OSINT 30 min)
+        "nvd":      _sync_status(db, "NVD Sync", 15, now),
+        "otx":      _sync_status(db, "OSINT Sync", 30, now) if otx_key else {"status": "Down", "detail": "No key"},
         "abuseipdb":{"status": "Active" if abuse_key        else "Down",   "detail": "API key present" if abuse_key else "No key"},
         "virustotal":{"status":"Active" if vt_key           else "Down",   "detail": "API key present" if vt_key else "No key"},
         "ai":       {"status": "Ready"  if ai_key           else "Down",   "detail": "GPT-4o key present" if ai_key else "No API key"},

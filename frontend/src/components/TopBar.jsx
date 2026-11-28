@@ -8,7 +8,9 @@ const FEEDS = [
 ];
 const OK_STATES = ['Live', 'Active', 'Ready', 'Online'];
 
-const dotClass = (status) => (OK_STATES.includes(status) ? 'ok' : status === 'Delayed' ? 'delayed' : 'down');
+// Syncing: a sync is running now; Waiting: none has run yet since this database was created
+const dotClass = (status) => (OK_STATES.includes(status) ? 'ok' : status === 'Syncing' ? 'syncing'
+  : status === 'Delayed' || status === 'Waiting' ? 'delayed' : 'down');
 
 const formatClock = (date) =>
   date.toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' });
